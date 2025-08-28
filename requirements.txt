@@ -1,0 +1,32 @@
+# SAM2 Video Training Dependencies
+# Core dependencies for the simplified SAM2 training system
+
+# PyTorch Lightning and ecosystem
+lightning>=2.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+torchmetrics>=1.0.0
+
+# Data processing
+numpy>=1.24.0
+Pillow>=9.0.0
+
+# Configuration and logging
+PyYAML>=6.0
+loguru>=0.7.0
+
+# Optional monitoring
+wandb>=0.15.0
+
+# Utilities
+tqdm>=4.64.0
+
+# Type checking (optional)
+beartype>=0.16.0
+
+# SAM2 specific (install separately as needed)
+# sam2  # This would be installed from the SAM2 repository
+
+# Development (optional)
+# pytest>=7.0.0
+# black>=22.0.0
