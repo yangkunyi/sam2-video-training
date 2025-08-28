@@ -11,17 +11,20 @@ import torch.nn as nn
 import yaml
 from loguru import logger
 from beartype import beartype
-
+from icecream import ic
 from sam2.build_sam import build_sam2
 from sam2.modeling.sam2_base import SAM2Base
 
 # Try to import tensordict for BatchedVideoDatapoint, with fallback
 try:
     from tensordict import tensorclass
+
     TENSORDICT_AVAILABLE = True
 except ImportError:
     TENSORDICT_AVAILABLE = False
-    logger.warning("tensordict not available, BatchedVideoDatapoint functionality will be limited")
+    logger.warning(
+        "tensordict not available, BatchedVideoDatapoint functionality will be limited"
+    )
 
 
 @beartype
@@ -82,7 +85,7 @@ class SAM2Model(nn.Module):
             if not checkpoint_path_obj.exists():
                 raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        self.model = None
+        self.loaded = False
 
     def load(self, device: str = None) -> "SAM2Model":
         """
@@ -122,7 +125,7 @@ class SAM2Model(nn.Module):
         # Move to device
         self.to(torch.device(device))
         logger.info(f"Model loaded and moved to {device}")
-
+        self.loaded = True
         # Configure for selective training
         if self.trainable_modules:
             self.configure_for_training(self.trainable_modules)
@@ -133,10 +136,9 @@ class SAM2Model(nn.Module):
         """Copy SAM2 base functionality to this model."""
         # Copy all essential methods and attributes from base_model
         for attr_name in dir(base_model):
-            if not attr_name.startswith("_") and hasattr(self, "__dict__"):
+            if not attr_name.startswith("__") and not hasattr(self, attr_name):
                 attr_value = getattr(base_model, attr_name)
-                if not callable(attr_value) or attr_name == "forward_image":
-                    setattr(self, attr_name, attr_value)
+                setattr(self, attr_name, attr_value)
 
     def configure_for_training(self, trainable_modules: List[str]) -> None:
         """
@@ -145,7 +147,7 @@ class SAM2Model(nn.Module):
         Args:
             trainable_modules: List of module names to train
         """
-        if self.model is None:
+        if self.loaded is False:
             raise RuntimeError("Model not loaded. Call load() first.")
 
         self.train()
@@ -242,17 +244,16 @@ class SAM2Model(nn.Module):
         Returns:
             Dictionary with predicted masks
         """
-        # Handle BatchedVideoDatapoint input format
-        if batched_video_datapoint is not None:
-            return self._forward_batched_datapoint(batched_video_datapoint)
-            
+        # # Handle BatchedVideoDatapoint input format
+        # if batched_video_datapoint is not None:
+        #     return self._forward_batched_datapoint(batched_video_datapoint)
+
         # Handle simplified batch format
-        if self.model is None:
+        if self.loaded is False:
             raise RuntimeError("Model not loaded. Call load() first.")
 
         B, T, C, H, W = images.shape
         num_objects = masks.shape[2] if masks is not None else 1
-
         # Create tracking output structure
         output_dict = {
             "cond_frame_outputs": {},
@@ -264,6 +265,8 @@ class SAM2Model(nn.Module):
         all_pred_masks_high_res = []
 
         for frame_idx in range(T):
+            print(frame_idx)
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             # Get current frame image
             frame_image = images[:, frame_idx]  # [B, C, H, W]
 
@@ -279,24 +282,16 @@ class SAM2Model(nn.Module):
             )
 
             # Process single frame for multiple objects with object-parallel processing
-            if hasattr(self, "track_step"):
-                frame_output = self._track_with_memory_multi_object(
-                    frame_image,
-                    frame_idx,
-                    output_dict,
-                    point_inputs_list,
-                    mask_inputs_list,
-                    is_init_cond,
-                    T,
-                    num_objects,
-                )
-            else:
-                logger.warning(
-                    "track_step not found. Falling back to simple forward pass."
-                )
-                frame_output = self._simple_forward_multi_object(
-                    frame_image, masks, frame_idx, num_objects
-                )
+            frame_output = self._track_with_memory_multi_object(
+                frame_image,
+                frame_idx,
+                output_dict,
+                point_inputs_list,
+                mask_inputs_list,
+                is_init_cond,
+                T,
+                num_objects,
+            )
 
             # Store frame output
             if is_init_cond:
@@ -305,12 +300,8 @@ class SAM2Model(nn.Module):
                 output_dict["non_cond_frame_outputs"][frame_idx] = frame_output
 
             # Collect predictions
-            pred_masks = frame_output.get(
-                "pred_masks", torch.zeros(B, num_objects, H // 4, W // 4)
-            )
-            pred_masks_high_res = frame_output.get(
-                "pred_masks_high_res", torch.zeros(B, num_objects, H, W)
-            )
+            pred_masks = frame_output["pred_masks"]
+            pred_masks_high_res = frame_output["pred_masks_high_res"]
 
             all_pred_masks.append(pred_masks)
             all_pred_masks_high_res.append(pred_masks_high_res)
@@ -347,14 +338,7 @@ class SAM2Model(nn.Module):
             for obj_idx in range(min(num_objects, len(prompts))):
                 obj_prompt = prompts[obj_idx]
                 if isinstance(obj_prompt, dict) and "point_coords" in obj_prompt:
-                    point_inputs = {
-                        "point_coords": obj_prompt["point_coords"],
-                        "point_labels": obj_prompt.get(
-                            "point_labels",
-                            torch.ones(obj_prompt["point_coords"].shape[:-1]),
-                        ),
-                    }
-                    point_inputs_list.append(point_inputs)
+                    point_inputs_list.append(obj_prompt)
                     mask_inputs_list.append(None)
                 else:
                     point_inputs_list.append(None)
@@ -364,6 +348,7 @@ class SAM2Model(nn.Module):
             while len(point_inputs_list) < num_objects:
                 point_inputs_list.append(None)
                 mask_inputs_list.append(None)
+
         elif gt_masks is not None:
             # Use GT masks for each object
             for obj_idx in range(num_objects):
@@ -378,180 +363,180 @@ class SAM2Model(nn.Module):
 
         return point_inputs_list, mask_inputs_list
 
-    def _convert_simplified_to_batched_datapoint(
-        self,
-        images: torch.Tensor,
-        masks: Optional[torch.Tensor] = None,
-        prompts: Optional[List[Dict[str, Any]]] = None,
-    ) -> Any:
-        """
-        Convert simplified batch format to SAM2 BatchedVideoDatapoint format.
-        
-        Args:
-            images: Video frames [B, T, C, H, W]
-            masks: Optional ground truth masks [B, T, N, H, W] where N is number of objects
-            prompts: Optional prompts for first frame for multiple objects
-            
-        Returns:
-            BatchedVideoDatapoint compatible with SAM2 training format
-        """
-        if not TENSORDICT_AVAILABLE:
-            logger.warning("tensordict not available, cannot create BatchedVideoDatapoint")
-            return None
-            
-        try:
-            from training.utils.data_utils import BatchedVideoDatapoint, BatchedVideoMetaData
-        except ImportError:
-            logger.warning("training.utils.data_utils not available, cannot create BatchedVideoDatapoint")
-            return None
+    # def _convert_simplified_to_batched_datapoint(
+    #     self,
+    #     images: torch.Tensor,
+    #     masks: Optional[torch.Tensor] = None,
+    #     prompts: Optional[List[Dict[str, Any]]] = None,
+    # ) -> Any:
+    #     """
+    #     Convert simplified batch format to SAM2 BatchedVideoDatapoint format.
 
-        B, T, C, H, W = images.shape
-        num_objects = masks.shape[2] if masks is not None else 1
+    #     Args:
+    #         images: Video frames [B, T, C, H, W]
+    #         masks: Optional ground truth masks [B, T, N, H, W] where N is number of objects
+    #         prompts: Optional prompts for first frame for multiple objects
 
-        # Rearrange images from [B, T, C, H, W] to [T, B, C, H, W]
-        img_batch = images.permute(1, 0, 2, 3, 4)  # [T, B, C, H, W]
+    #     Returns:
+    #         BatchedVideoDatapoint compatible with SAM2 training format
+    #     """
+    #     if not TENSORDICT_AVAILABLE:
+    #         logger.warning("tensordict not available, cannot create BatchedVideoDatapoint")
+    #         return None
 
-        # Create object to frame index mapping
-        # For each time step, for each object, we need to specify which frame it belongs to
-        # In our case, all objects belong to their respective frames
-        obj_to_frame_idx = torch.zeros(T, num_objects, 2, dtype=torch.int32)
-        for t in range(T):
-            for obj_idx in range(num_objects):
-                obj_to_frame_idx[t, obj_idx, 0] = t  # frame index
-                obj_to_frame_idx[t, obj_idx, 1] = 0  # batch index (we'll use 0 for all)
+    #     try:
+    #         from sam2.training.utils.data_utils import BatchedVideoDatapoint, BatchedVideoMetaData
+    #     except ImportError:
+    #         logger.warning("sam2.training.utils.data_utils not available, cannot create BatchedVideoDatapoint")
+    #         return None
 
-        # Prepare masks in the required format [T, O, H, W]
-        if masks is not None:
-            # Rearrange masks from [B, T, N, H, W] to [T, O, H, W]
-            # For simplicity, we take the first batch element
-            batch_masks = masks[0].permute(1, 0, 2, 3)  # [T, N, H, W] -> [T, O, H, W]
-        else:
-            batch_masks = torch.zeros(T, num_objects, H, W, dtype=torch.bool)
+    #     B, T, C, H, W = images.shape
+    #     num_objects = masks.shape[2] if masks is not None else 1
 
-        # Create metadata
-        # unique_objects_identifier: [T, O, 3] - (video_id, obj_id, frame_id)
-        unique_objects_identifier = torch.zeros(T, num_objects, 3, dtype=torch.long)
-        for t in range(T):
-            for obj_idx in range(num_objects):
-                unique_objects_identifier[t, obj_idx, 0] = 0  # video_id (we'll use 0)
-                unique_objects_identifier[t, obj_idx, 1] = obj_idx  # obj_id
-                unique_objects_identifier[t, obj_idx, 2] = t  # frame_id
+    #     # Rearrange images from [B, T, C, H, W] to [T, B, C, H, W]
+    #     img_batch = images.permute(1, 0, 2, 3, 4)  # [T, B, C, H, W]
 
-        # frame_orig_size: [T, O, 2] - (height, width)
-        frame_orig_size = torch.tensor([H, W], dtype=torch.long).repeat(T, num_objects, 1)
+    #     # Create object to frame index mapping
+    #     # For each time step, for each object, we need to specify which frame it belongs to
+    #     # In our case, all objects belong to their respective frames
+    #     obj_to_frame_idx = torch.zeros(T, num_objects, 2, dtype=torch.int32)
+    #     for t in range(T):
+    #         for obj_idx in range(num_objects):
+    #             obj_to_frame_idx[t, obj_idx, 0] = t  # frame index
+    #             obj_to_frame_idx[t, obj_idx, 1] = 0  # batch index (we'll use 0 for all)
 
-        metadata = BatchedVideoMetaData(
-            unique_objects_identifier=unique_objects_identifier,
-            frame_orig_size=frame_orig_size,
-        )
+    #     # Prepare masks in the required format [T, O, H, W]
+    #     if masks is not None:
+    #         # Rearrange masks from [B, T, N, H, W] to [T, O, H, W]
+    #         # For simplicity, we take the first batch element
+    #         batch_masks = masks[0].permute(1, 0, 2, 3)  # [T, N, H, W] -> [T, O, H, W]
+    #     else:
+    #         batch_masks = torch.zeros(T, num_objects, H, W, dtype=torch.bool)
 
-        batched_datapoint = BatchedVideoDatapoint(
-            img_batch=img_batch,
-            obj_to_frame_idx=obj_to_frame_idx,
-            masks=batch_masks,
-            metadata=metadata,
-            dict_key="converted_batch",
-            batch_size=[T],
-        )
+    #     # Create metadata
+    #     # unique_objects_identifier: [T, O, 3] - (video_id, obj_id, frame_id)
+    #     unique_objects_identifier = torch.zeros(T, num_objects, 3, dtype=torch.long)
+    #     for t in range(T):
+    #         for obj_idx in range(num_objects):
+    #             unique_objects_identifier[t, obj_idx, 0] = 0  # video_id (we'll use 0)
+    #             unique_objects_identifier[t, obj_idx, 1] = obj_idx  # obj_id
+    #             unique_objects_identifier[t, obj_idx, 2] = t  # frame_id
 
-        return batched_datapoint
+    #     # frame_orig_size: [T, O, 2] - (height, width)
+    #     frame_orig_size = torch.tensor([H, W], dtype=torch.long).repeat(T, num_objects, 1)
 
-    def _forward_batched_datapoint(self, batched_video_datapoint: Any) -> Dict[str, torch.Tensor | Dict]:
-        """
-        Forward pass for SAM2 BatchedVideoDatapoint format with frame-sequential, object-parallel processing.
-        
-        Args:
-            batched_video_datapoint: SAM2 BatchedVideoDatapoint
-            
-        Returns:
-            Dictionary with predicted masks
-        """
-        if not hasattr(self, "track_step"):
-            logger.warning("track_step not found. Cannot process BatchedVideoDatapoint.")
-            return {
-                "pred_masks": torch.zeros(1, 1, 1, 64, 64),
-                "pred_masks_high_res": torch.zeros(1, 1, 1, 256, 256),
-            }
+    #     metadata = BatchedVideoMetaData(
+    #         unique_objects_identifier=unique_objects_identifier,
+    #         frame_orig_size=frame_orig_size,
+    #     )
 
-        # Extract data from BatchedVideoDatapoint
-        img_batch = batched_video_datapoint["img_batch"]  # [T, B, C, H, W]
-        masks = batched_video_datapoint["masks"]  # [T, O, H, W]
-        obj_to_frame_idx = batched_video_datapoint["obj_to_frame_idx"]  # [T, O, 2]
-        
-        T = img_batch.shape[0]  # Number of frames
-        B = img_batch.shape[1]  # Batch size
-        O = masks.shape[1]  # Number of objects
-        
-        # Create tracking output structure
-        output_dict = {
-            "cond_frame_outputs": {},
-            "non_cond_frame_outputs": {},
-        }
+    #     batched_datapoint = BatchedVideoDatapoint(
+    #         img_batch=img_batch,
+    #         obj_to_frame_idx=obj_to_frame_idx,
+    #         masks=batch_masks,
+    #         metadata=metadata,
+    #         dict_key="converted_batch",
+    #         batch_size=[T],
+    #     )
 
-        # Process frames sequentially (temporal sequentiality)
-        all_pred_masks = []
-        all_pred_masks_high_res = []
+    #     return batched_datapoint
 
-        for frame_idx in range(T):
-            # Get current frame image for all batch elements
-            frame_image = img_batch[frame_idx]  # [B, C, H, W]
+    # def _forward_batched_datapoint(self, batched_video_datapoint: Any) -> Dict[str, torch.Tensor | Dict]:
+    #     """
+    #     Forward pass for SAM2 BatchedVideoDatapoint format with frame-sequential, object-parallel processing.
 
-            # Determine if this is a conditioning frame (first frame only)
-            is_init_cond = frame_idx == 0
+    #     Args:
+    #         batched_video_datapoint: SAM2 BatchedVideoDatapoint
 
-            # Extract object-specific data for this frame
-            frame_masks = masks[frame_idx]  # [O, H, W]
-            
-            # Prepare batched inputs for all objects in parallel
-            point_inputs_list = [None] * O
-            mask_inputs_list = [None] * O
-            
-            if is_init_cond:
-                # Use masks as input for the first frame for all objects simultaneously
-                # Reshape frame_masks from [O, H, W] to [1, O, H, W] to process all objects in batch
-                batched_mask_inputs = frame_masks.unsqueeze(0).repeat(B, 1, 1, 1)  # [B, O, H, W]
-                mask_inputs_list = [batched_mask_inputs]  # Single batched input for all objects
+    #     Returns:
+    #         Dictionary with predicted masks
+    #     """
+    #     if not hasattr(self, "track_step"):
+    #         logger.warning("track_step not found. Cannot process BatchedVideoDatapoint.")
+    #         return {
+    #             "pred_masks": torch.zeros(1, 1, 1, 64, 64),
+    #             "pred_masks_high_res": torch.zeros(1, 1, 1, 256, 256),
+    #         }
 
-            # Process frame with memory for all objects in parallel (object parallelism)
-            frame_output = self._track_with_memory_multi_object(
-                frame_image,
-                frame_idx,
-                output_dict,
-                point_inputs_list,
-                mask_inputs_list,
-                is_init_cond,
-                T,
-                O,
-            )
+    #     # Extract data from BatchedVideoDatapoint
+    #     img_batch = batched_video_datapoint["img_batch"]  # [T, B, C, H, W]
+    #     masks = batched_video_datapoint["masks"]  # [T, O, H, W]
+    #     obj_to_frame_idx = batched_video_datapoint["obj_to_frame_idx"]  # [T, O, 2]
 
-            # Store frame output
-            if is_init_cond:
-                output_dict["cond_frame_outputs"][frame_idx] = frame_output
-            else:
-                output_dict["non_cond_frame_outputs"][frame_idx] = frame_output
+    #     T = img_batch.shape[0]  # Number of frames
+    #     B = img_batch.shape[1]  # Batch size
+    #     O = masks.shape[1]  # Number of objects
 
-            # Collect predictions
-            pred_masks = frame_output.get(
-                "pred_masks", torch.zeros(B, O, frame_image.shape[2] // 4, frame_image.shape[3] // 4)
-            )
-            pred_masks_high_res = frame_output.get(
-                "pred_masks_high_res", torch.zeros(B, O, frame_image.shape[2], frame_image.shape[3])
-            )
+    #     # Create tracking output structure
+    #     output_dict = {
+    #         "cond_frame_outputs": {},
+    #         "non_cond_frame_outputs": {},
+    #     }
 
-            all_pred_masks.append(pred_masks)
-            all_pred_masks_high_res.append(pred_masks_high_res)
+    #     # Process frames sequentially (temporal sequentiality)
+    #     all_pred_masks = []
+    #     all_pred_masks_high_res = []
 
-        # Stack predictions across time
-        pred_masks = torch.stack(all_pred_masks, dim=1)  # [B, T, O, H//4, W//4]
-        pred_masks_high_res = torch.stack(
-            all_pred_masks_high_res, dim=1
-        )  # [B, T, O, H, W]
+    #     for frame_idx in range(T):
+    #         # Get current frame image for all batch elements
+    #         frame_image = img_batch[frame_idx]  # [B, C, H, W]
 
-        return {
-            "pred_masks": pred_masks,
-            "pred_masks_high_res": pred_masks_high_res,
-            "output_dict": output_dict,
-        }
+    #         # Determine if this is a conditioning frame (first frame only)
+    #         is_init_cond = frame_idx == 0
+
+    #         # Extract object-specific data for this frame
+    #         frame_masks = masks[frame_idx]  # [O, H, W]
+
+    #         # Prepare batched inputs for all objects in parallel
+    #         point_inputs_list = [None] * O
+    #         mask_inputs_list = [None] * O
+
+    #         if is_init_cond:
+    #             # Use masks as input for the first frame for all objects simultaneously
+    #             # Reshape frame_masks from [O, H, W] to [1, O, H, W] to process all objects in batch
+    #             batched_mask_inputs = frame_masks.unsqueeze(0).repeat(B, 1, 1, 1)  # [B, O, H, W]
+    #             mask_inputs_list = [batched_mask_inputs]  # Single batched input for all objects
+
+    #         # Process frame with memory for all objects in parallel (object parallelism)
+    #         frame_output = self._track_with_memory_multi_object(
+    #             frame_image,
+    #             frame_idx,
+    #             output_dict,
+    #             point_inputs_list,
+    #             mask_inputs_list,
+    #             is_init_cond,
+    #             T,
+    #             O,
+    #         )
+
+    #         # Store frame output
+    #         if is_init_cond:
+    #             output_dict["cond_frame_outputs"][frame_idx] = frame_output
+    #         else:
+    #             output_dict["non_cond_frame_outputs"][frame_idx] = frame_output
+
+    #         # Collect predictions
+    #         pred_masks = frame_output.get(
+    #             "pred_masks", torch.zeros(B, O, frame_image.shape[2] // 4, frame_image.shape[3] // 4)
+    #         )
+    #         pred_masks_high_res = frame_output.get(
+    #             "pred_masks_high_res", torch.zeros(B, O, frame_image.shape[2], frame_image.shape[3])
+    #         )
+
+    #         all_pred_masks.append(pred_masks)
+    #         all_pred_masks_high_res.append(pred_masks_high_res)
+
+    #     # Stack predictions across time
+    #     pred_masks = torch.stack(all_pred_masks, dim=1)  # [B, T, O, H//4, W//4]
+    #     pred_masks_high_res = torch.stack(
+    #         all_pred_masks_high_res, dim=1
+    #     )  # [B, T, O, H, W]
+
+    #     return {
+    #         "pred_masks": pred_masks,
+    #         "pred_masks_high_res": pred_masks_high_res,
+    #         "output_dict": output_dict,
+    #     }
 
     def _track_with_memory_multi_object(
         self,
@@ -565,14 +550,6 @@ class SAM2Model(nn.Module):
         num_objects: int,
     ) -> Dict:
         """Track frame with memory using SAM2 track_step method for multiple objects with object-parallel processing."""
-        if not hasattr(self, "forward_image"):
-            return self._simple_forward_multi_object(
-                frame_image,
-                mask_inputs_list[0] if mask_inputs_list else None,
-                frame_idx,
-                num_objects,
-            )
-
         # Extract image features
         backbone_out = self.forward_image(frame_image)
         backbone_out, vision_feats, vision_pos_embeds, feat_sizes = (
@@ -581,47 +558,55 @@ class SAM2Model(nn.Module):
 
         # Process all objects in parallel within this frame using batched operations
         # Instead of processing each object separately, we'll batch them
-        
+
         # Prepare batched inputs for all objects
         batched_point_inputs = None
         batched_mask_inputs = None
-        
+
         # For point inputs, combine all objects' points into batched format
         if any(point_inputs is not None for point_inputs in point_inputs_list):
             # Collect all point coordinates and labels
             all_point_coords = []
             all_point_labels = []
             batch_indices = []
-            
+
             for obj_idx, point_inputs in enumerate(point_inputs_list):
                 if point_inputs is not None and "point_coords" in point_inputs:
                     coords = point_inputs["point_coords"]  # [N_points, 2]
-                    labels = point_inputs.get("point_labels", torch.ones(coords.shape[0]))
-                    
+                    labels = point_inputs["point_labels"]  # [N_points]
+
                     # Add to batched tensors
                     all_point_coords.append(coords)
                     all_point_labels.append(labels)
                     # Track which object each point belongs to
                     batch_indices.extend([obj_idx] * coords.shape[0])
-            
+
             if all_point_coords:
-                batched_point_coords = torch.cat(all_point_coords, dim=0)  # [Total_points, 2]
-                batched_point_labels = torch.cat(all_point_labels, dim=0)  # [Total_points]
-                batch_indices = torch.tensor(batch_indices, dtype=torch.long)  # [Total_points]
-                
+                batched_point_coords = torch.cat(
+                    all_point_coords, dim=0
+                )  # [Total_points, 2]
+                batched_point_labels = torch.cat(
+                    all_point_labels, dim=0
+                )  # [Total_points]
+                batch_indices = torch.tensor(
+                    batch_indices, dtype=torch.long
+                )  # [Total_points]
+
                 batched_point_inputs = {
-                    "point_coords": batched_point_coords,
-                    "point_labels": batched_point_labels,
-                    "batch_indices": batch_indices,
+                    "point_coords": batched_point_coords.unsqueeze(0),
+                    "point_labels": batched_point_labels.unsqueeze(0),
+                    "batch_indices": batch_indices.unsqueeze(0),
                 }
-        
+
         # For mask inputs, stack all objects' masks into batched format
         if any(mask_inputs is not None for mask_inputs in mask_inputs_list):
             valid_masks = [mask for mask in mask_inputs_list if mask is not None]
             if valid_masks:
                 # Stack masks along object dimension
-                batched_mask_inputs = torch.stack(valid_masks, dim=1)  # [B, N_objects, H, W]
-        
+                batched_mask_inputs = torch.stack(
+                    valid_masks, dim=1
+                )  # [B, N_objects, H, W]
+
         # Process with memory for all objects simultaneously
         frame_output = self.track_step(
             frame_idx=frame_idx,
@@ -635,125 +620,8 @@ class SAM2Model(nn.Module):
             num_frames=num_frames,
             run_mem_encoder=True,
         )
-        
+
         return frame_output
-
-    def track_step_with_multiple_objects(
-        self,
-        frame_images: torch.Tensor,
-        frame_idx: int,
-        is_init_cond_frame: bool,
-        masks: Optional[torch.Tensor] = None,
-        point_inputs: Optional[List[Dict]] = None,
-        output_dict: Optional[Dict] = None,
-        num_frames: int = 1,
-        num_objects: int = 1,
-    ) -> Dict:
-        """
-        Track multiple objects in a single frame using SAM2's track_step method.
-        
-        Args:
-            frame_images: Frame images [B, C, H, W]
-            frame_idx: Current frame index
-            is_init_cond_frame: Whether this is an initial conditioning frame
-            masks: Ground truth masks [B, N, H, W] where N is number of objects
-            point_inputs: List of point prompts for each object
-            output_dict: Output dictionary to store results
-            num_frames: Total number of frames
-            num_objects: Number of objects to track
-            
-        Returns:
-            Dictionary with tracking results
-        """
-        if not hasattr(self, "track_step"):
-            logger.warning("track_step method not found in model")
-            return self._simple_forward_multi_object(
-                frame_images, masks, frame_idx, num_objects
-            )
-
-        if output_dict is None:
-            output_dict = {
-                "cond_frame_outputs": {},
-                "non_cond_frame_outputs": {},
-            }
-
-        # Extract image features
-        backbone_out = self.forward_image(frame_images)
-        backbone_out, vision_feats, vision_pos_embeds, feat_sizes = (
-            self._prepare_backbone_features(backbone_out)
-        )
-
-        # Process each object
-        all_outputs = []
-        for obj_idx in range(num_objects):
-            # Get object-specific inputs
-            obj_mask = masks[:, obj_idx] if masks is not None else None
-            obj_point_inputs = point_inputs[obj_idx] if point_inputs and obj_idx < len(point_inputs) else None
-
-            # Process with memory for each object
-            obj_output = self.track_step(
-                frame_idx=frame_idx,
-                is_init_cond_frame=is_init_cond_frame,
-                current_vision_feats=vision_feats,
-                current_vision_pos_embeds=vision_pos_embeds,
-                feat_sizes=feat_sizes,
-                point_inputs=obj_point_inputs,
-                mask_inputs=obj_mask,
-                output_dict=output_dict,
-                num_frames=num_frames,
-                run_mem_encoder=True,
-            )
-            all_outputs.append(obj_output)
-
-        # Combine outputs
-        if all_outputs:
-            combined_output = all_outputs[0].copy()
-            if "pred_masks" in combined_output and len(all_outputs) > 1:
-                pred_masks = [
-                    out.get(
-                        "pred_masks", torch.zeros_like(combined_output["pred_masks"])
-                    )
-                    for out in all_outputs
-                ]
-                combined_output["pred_masks"] = torch.stack(
-                    pred_masks, dim=1
-                )  # [B, N, H//4, W//4]
-            if "pred_masks_high_res" in combined_output and len(all_outputs) > 1:
-                pred_masks_high_res = [
-                    out.get(
-                        "pred_masks_high_res",
-                        torch.zeros_like(combined_output["pred_masks_high_res"]),
-                    )
-                    for out in all_outputs
-                ]
-                combined_output["pred_masks_high_res"] = torch.stack(
-                    pred_masks_high_res, dim=1
-                )  # [B, N, H, W]
-            return combined_output
-        else:
-            return self._simple_forward_multi_object(
-                frame_images, masks, frame_idx, num_objects
-            )
-
-    def _simple_forward_multi_object(
-        self,
-        frame_image: torch.Tensor,
-        masks: Optional[torch.Tensor],
-        frame_idx: int,
-        num_objects: int,
-    ) -> Dict:
-        """Simple forward pass for testing without full SAM2 for multiple objects."""
-        batch_size = frame_image.shape[0]
-        h, w = frame_image.shape[2:]
-
-        # Generate dummy predictions for multiple objects
-        pred_masks = torch.zeros(batch_size, num_objects, h // 4, w // 4)
-        pred_masks_high_res = torch.zeros(batch_size, num_objects, h, w)
-
-        return {
-            "pred_masks": pred_masks,
-            "pred_masks_high_res": pred_masks_high_res,
-        }
 
     def get_info(self) -> Dict[str, Any]:
         """Get model information."""

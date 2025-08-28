@@ -26,13 +26,13 @@ class PromptGenerator:
     def __init__(
         self,
         prompt_types: List[str] = None,
-        number_of_pos_points: int = 1,
+        num_of_pos_points: int = 1,
         include_center: bool = False,
         num_of_neg_points: int = 0,
     ):
         """Initialize prompt generator."""
         self.prompt_types = prompt_types or ["point", "bbox", "mask"]
-        self.number_of_pos_points = number_of_pos_points
+        self.number_of_pos_points = num_of_pos_points
         self.include_center = include_center
         self.num_of_neg_points = num_of_neg_points
 
@@ -61,7 +61,6 @@ class PromptGenerator:
 
         pos_pixels = np.where(mask > 0)
         neg_pixels = np.where(mask == 0)
-        ic(mask.shape)
         # Determine number of positive points
         # Include center point if requested and valid
         center_point = None
@@ -160,8 +159,11 @@ class PromptGenerator:
         y_min, y_max = np.where(rows)[0][[0, -1]]
         x_min, x_max = np.where(cols)[0][[0, -1]]
 
-        bbox = torch.tensor([x_min, y_min, x_max, y_max], dtype=torch.float32)
-        return {"boxes": bbox}
+        bbox_coords = torch.tensor(
+            [[x_min, y_min], [x_max, y_max]], dtype=torch.float32
+        )
+        bbox = {"point_coords": bbox_coords, "point_labels": torch.tensor([2, 3])}
+        return bbox
 
     def _generate_mask_prompts(self, mask: np.ndarray) -> Dict[str, Any]:
         """Generate mask prompts."""
@@ -285,7 +287,16 @@ class VideoDataset(Dataset):
                     obj_idx, start_h : start_h + mask_h, start_w : start_w + mask_w
                 ] = 1.0
 
-            masks.append(torch.from_numpy(mask).float())
+            # Convert to tensor and resize to match transformed image dimensions
+            mask_tensor = torch.from_numpy(mask).float()
+            if mask_tensor.shape[-2:] != image_tensor.shape[-2:]:
+                # Resize masks to match image dimensions
+                mask_tensor = torch.nn.functional.interpolate(
+                    mask_tensor.unsqueeze(0),
+                    size=image_tensor.shape[-2:],
+                    mode="nearest",
+                ).squeeze(0)
+            masks.append(mask_tensor)
 
             # Generate prompts only for first frame
             if i == 0:
@@ -323,7 +334,7 @@ class COCODataset(Dataset):
         image_size: Tuple[int, int] = (512, 512),
         video_clip_length: int = 5,
         prompt_types: List[str] = None,
-        number_of_pos_points: int = 1,
+        num_of_pos_points: int = 1,
         include_center: bool = False,
         num_of_neg_points: int = 0,
     ):
@@ -343,7 +354,7 @@ class COCODataset(Dataset):
         self.image_size = image_size
         self.video_clip_length = video_clip_length
         self.prompt_generator = PromptGenerator(
-            prompt_types, number_of_pos_points, include_center, num_of_neg_points
+            prompt_types, num_of_pos_points, include_center, num_of_neg_points
         )
 
         # Validate input
@@ -456,7 +467,7 @@ class COCODataset(Dataset):
 
     def _load_gt_masks_for_image(
         self, image_id: int, height: int, width: int
-    ) -> Dict[int, np.ndarray]:
+    ) -> List[np.ndarray]:
         """
         Load ground truth masks for a given image.
 
@@ -473,7 +484,7 @@ class COCODataset(Dataset):
             return self.mask_cache[cache_key]
 
         annotations = self.image_id_to_annotations.get(image_id, [])
-        masks = {}
+        masks = []
 
         for ann in annotations:
             # Validate annotation
@@ -481,38 +492,19 @@ class COCODataset(Dataset):
                 logger.warning(f"Invalid annotation format for image {image_id}")
                 continue
 
-            obj_id = ann.get("category_id")
-            if obj_id is None:
-                logger.warning(f"Annotation missing category_id for image {image_id}")
-                continue
-
             segmentation = ann.get("segmentation")
-
             if segmentation is None:
                 continue
 
             # Decode the segmentation mask
             try:
-                if isinstance(segmentation, dict) and "counts" in segmentation:
-                    # RLE format
-                    mask = self._decode_rle_mask(segmentation, height, width)
-                    # Only add non-empty masks
-                    if mask.sum() > 0:
-                        masks[obj_id] = mask.astype(np.float32)
-                elif isinstance(segmentation, list):
-                    # Polygon format - simplified handling
-                    # In practice, you would need to properly rasterize polygons
-                    logger.warning(
-                        "Polygon segmentation not fully implemented, using placeholder"
-                    )
-                    mask = np.zeros((height, width), dtype=np.float32)
-                    # Create a simple mask for now
-                    mask[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4] = (
-                        1.0
-                    )
-                    # Only add non-empty masks
-                    if mask.sum() > 0:
-                        masks[obj_id] = mask
+                # RLE format
+                mask = self._decode_rle_mask(segmentation, height, width)
+                mask = np.expand_dims(mask, axis=0)
+                # Only add non-empty masks
+                if mask.sum() > 0:
+                    masks.append(mask.astype(np.float32))
+
             except Exception as e:
                 logger.warning(
                     f"Failed to decode segmentation for annotation {ann.get('id', 'unknown')}: {e}"
@@ -521,6 +513,7 @@ class COCODataset(Dataset):
 
         # Cache the result
         self.mask_cache[cache_key] = masks
+
         return masks
 
     def __len__(self):
@@ -563,21 +556,35 @@ class COCODataset(Dataset):
             # Convert to tensor format [N, H, W] where N is number of objects
             if gt_masks:
                 # Stack all masks
-                mask_list = [
-                    torch.from_numpy(mask).float() for mask in gt_masks.values()
-                ]
+                mask_list = [torch.from_numpy(mask).float() for mask in gt_masks]
                 mask_tensor = torch.stack(mask_list, dim=0)  # [N, H, W]
+                # Resize masks to match transformed image dimensions
+                if mask_tensor.shape[-2:] != image_tensor.shape[-2:]:
+                    # Resize masks to match image dimensions
+                    mask_tensor = torch.nn.functional.interpolate(
+                        mask_tensor, size=image_tensor.shape[-2:], mode="nearest"
+                    )
             else:
                 # No objects, create empty mask
                 mask_tensor = torch.zeros((1, height, width), dtype=torch.float32)
+                # Resize masks to match transformed image dimensions
+                if mask_tensor.shape[-2:] != image_tensor.shape[-2:]:
+                    # Resize masks to match image dimensions
+                    mask_tensor = torch.nn.functional.interpolate(
+                        mask_tensor.unsqueeze(0),
+                        size=image_tensor.shape[-2:],
+                        mode="nearest",
+                    ).squeeze(0)
 
             masks.append(mask_tensor)
 
             # Generate prompts only for first frame
             if i == 0:
                 # For first frame, generate prompts for all objects
-                for obj_id, mask in gt_masks.items():
-                    prompt_dict = self.prompt_generator.generate_prompts(mask)
+                for mask in mask_tensor:
+                    prompt_dict = self.prompt_generator.generate_prompts(
+                        mask.squeeze(0).detach().cpu().numpy()
+                    )
                     first_frame_prompts.append(prompt_dict)
 
         # Stack tensors
@@ -593,7 +600,7 @@ class COCODataset(Dataset):
             if mask.shape[0] < max_objects:
                 # Pad with zero masks
                 padding = torch.zeros(
-                    (max_objects - mask.shape[0], height, width), dtype=mask.dtype
+                    (max_objects - mask.shape[0], 1, height, width), dtype=mask.dtype
                 )
                 mask = torch.cat([mask, padding], dim=0)
             padded_masks.append(mask)
@@ -602,7 +609,6 @@ class COCODataset(Dataset):
 
         # Generate prompts for all objects in first frame
 
-        ic(first_frame_prompts)
         return {
             "images": images,
             "masks": masks,
@@ -668,8 +674,10 @@ def collate_fn(batch):
 
     # Create BatchedVideoDatapoint structure
     # Rearrange images from [B, T, C, H, W] to [T, B, C, H, W]
-    img_batch = batched_images.permute(1, 0, 2, 3, 4)  # [T, B, C, H, W]
-
+    # img_batch = batched_images.permute(1, 0, 2, 3, 4)  # [T, B, C, H, W]
+    img_batch = batched_images  # [B, T, C, H, W]
+    # mask_batch = batched_masks.permute(1, 0, 2, 3, 4, 5)  # [T, B, O, 1, H, W]
+    mask_batch = batched_masks.squeeze(3)  # [B, T, O, H, W]
     # Create object to frame index mapping [T, O, 2]
     # Each object belongs to its corresponding frame and video
     obj_to_frame_idx = torch.zeros(max_len, max_objects, 2, dtype=torch.int32)
@@ -681,17 +689,16 @@ def collate_fn(batch):
     # Rearrange masks from [B, T, N, H, W] to [T, O, H, W]
     # For simplicity, we'll take the first batch element for now
     # In a full implementation, this would need to handle batching properly
-    batch_masks = batched_masks[0].permute(1, 0, 2, 3)  # [T, N, H, W] -> [T, O, H, W]
 
     # Create flat indexing mechanism for efficient access
     # This allows accessing [T×B] image batches through a flattened [T*B] dimension
     flat_obj_to_img_idx = torch.arange(max_len * batch_size).view(max_len, batch_size)
 
     return {
-        "img_batch": img_batch,  # [T, B, C, H, W]
-        "masks": batch_masks,  # [T, O, H, W]
+        "images": img_batch,  # [B, T, C, H, W]
+        "masks": mask_batch,  # [B, T, O, H, W]
         "obj_to_frame_idx": obj_to_frame_idx,  # [T, O, 2]
-        "prompts": prompts,  # List[List[Dict[str, Any]]]
+        "prompts": prompts[0],  # List[Dict[str, Any]]]
         "video_paths": video_paths,
         "num_objects": num_objects_list,
         "flat_obj_to_img_idx": flat_obj_to_img_idx,  # [T, B]
@@ -708,7 +715,7 @@ def create_dataloader(
     batch_size: int = 1,
     num_workers: int = 4,
     shuffle: bool = True,
-    number_of_pos_points: int = 1,
+    num_of_pos_points: int = 1,
     include_center: bool = False,
     num_of_neg_points: int = 0,
     **kwargs,
@@ -728,7 +735,7 @@ def create_dataloader(
         **kwargs: Additional arguments passed to dataset constructor
     """
     # Add the new parameters to kwargs
-    kwargs["number_of_pos_points"] = number_of_pos_points
+    kwargs["num_of_pos_points"] = num_of_pos_points
     kwargs["include_center"] = include_center
     kwargs["num_of_neg_points"] = num_of_neg_points
     kwargs["prompt_types"] = prompt_types

@@ -14,4 +14,13 @@ myloader = create_dataloader(
 )
 
 data = next(iter(myloader))
+ic(data["img_batch"].shape)
+ic(data["masks"].shape)
+ic(data["obj_to_frame_idx"].shape)
 ic(data["prompts"])
+ic(data["video_paths"])
+ic(data["num_objects"])
+ic(data["flat_obj_to_img_idx"].shape)
+ic(data["batch_size"])
+ic(data["max_objects"])
+ic(data["max_len"])

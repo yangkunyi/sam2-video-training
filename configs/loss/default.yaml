@@ -1,0 +1,6 @@
+# Configuration for loss functions
+bce_weight: 1.0
+dice_weight: 1.0
+iou_weight: 0.5
+temporal_weight: 0.1
+smooth: 1e-6

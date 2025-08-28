@@ -6,15 +6,22 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, field
 
+# Hydra imports
+from hydra.core.config_store import ConfigStore
+from omegaconf import DictConfig
+
 
 @dataclass
 class ModelConfig:
     """Configuration for SAM2 model."""
+
     checkpoint_path: str = ""
-    config_path: str = ""
-    trainable_modules: List[str] = field(default_factory=lambda: ["memory_attention", "memory_encoder"])
+    config_path: str = "configs/sam2.1_hiera_t.yaml"
+    trainable_modules: List[str] = field(
+        default_factory=lambda: ["memory_attention", "memory_encoder"]
+    )
     device: str = "cuda"
-    
+
     # Tracker parameters
     num_maskmem: int = 7
     image_size: int = 512
@@ -32,22 +39,45 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     """Configuration for dataset."""
-    data_path: str = ""
+
+    dataset_type: str = "coco"
+    data_path: str = "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_train.json"
     image_size: Tuple[int, int] = (512, 512)
     video_clip_length: int = 5
     batch_size: int = 1
     num_workers: int = 16
     shuffle: bool = True
-    
+
     # Prompt configuration
-    prompt_types: List[str] = field(default_factory=lambda: ["point", "bbox", "mask"])
-    num_points: Tuple[int, int] = (1, 3)
-    include_center_point: bool = False
+    prompt_types: List[str] = field(default_factory=lambda: ['point'])
+    num_of_pos_points: int = 1
+    num_of_neg_points: int = 0
+    include_center_point: bool = True
+
+
+@dataclass
+class ValDatasetConfig:
+    """Configuration for validation dataset."""
+
+    dataset_type: str = "coco"
+    data_path: str = "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_test.json"
+    image_size: Tuple[int, int] = (512, 512)
+    video_clip_length: int = 5
+    batch_size: int = 1
+    num_workers: int = 16
+    shuffle: bool = False
+
+    # Prompt configuration
+    prompt_types: List[str] = field(default_factory=lambda: ['point'])
+    num_of_pos_points: int = 1
+    num_of_neg_points: int = 0
+    include_center_point: bool = True
 
 
 @dataclass
 class LossConfig:
     """Configuration for loss functions."""
+
     bce_weight: float = 1.0
     dice_weight: float = 1.0
     iou_weight: float = 0.5
@@ -55,9 +85,10 @@ class LossConfig:
     smooth: float = 1e-6
 
 
-@dataclass 
+@dataclass
 class OptimizerConfig:
     """Configuration for optimizer."""
+
     type: str = "AdamW"
     lr: float = 1e-4
     weight_decay: float = 1e-4
@@ -68,6 +99,7 @@ class OptimizerConfig:
 @dataclass
 class SchedulerConfig:
     """Configuration for learning rate scheduler."""
+
     enabled: bool = True
     type: str = "CosineAnnealingLR"
     T_max: int = 10
@@ -79,6 +111,7 @@ class SchedulerConfig:
 @dataclass
 class TrainerConfig:
     """Configuration for PyTorch Lightning trainer."""
+
     accelerator: str = "auto"
     devices: Any = "auto"
     precision: str = "16-mixed"
@@ -93,7 +126,7 @@ class TrainerConfig:
     enable_progress_bar: bool = True
     logger: bool = True
     log_every_n_steps: int = 50
-    
+
     # Early stopping (optional)
     early_stopping_patience: Optional[int] = None
 
@@ -101,40 +134,37 @@ class TrainerConfig:
 @dataclass
 class Config:
     """Root configuration containing all settings."""
+
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    valdataset: ValDatasetConfig = field(default_factory=ValDatasetConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    
+
     # Multi-object tracking parameters
     max_objects: int = 10  # Maximum number of objects to track simultaneously
-    
+
     # Global settings
     seed: int = 42
     use_wandb: bool = True
     wandb_project: str = "sam2-training"
     output_dir: str = "./outputs"
-    
+
     # Logging
     log_level: str = "INFO"
     save_dir: str = "./checkpoints"
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert configuration to dictionary."""
-        return {
-            "model": self.model.__dict__,
-            "dataset": self.dataset.__dict__, 
-            "loss": self.loss.__dict__,
-            "optimizer": self.optimizer.__dict__,
-            "scheduler": self.scheduler.__dict__,
-            "trainer": self.trainer.__dict__,
-            "seed": self.seed,
-            "use_wandb": self.use_wandb,
-            "wandb_project": self.wandb_project,
-            "output_dir": self.output_dir,
-            "log_level": self.log_level,
-            "save_dir": self.save_dir,
-            "max_objects": self.max_objects,
-        }
+
+
+# Register configs with Hydra's ConfigStore
+cs = ConfigStore.instance()
+cs.store(name="config", node=Config)
+cs.store(group="model", name="sam2", node=ModelConfig)
+cs.store(group="dataset", name="coco", node=DatasetConfig)
+cs.store(group="valdataset", name="coco", node=ValDatasetConfig)
+cs.store(group="loss", name="default", node=LossConfig)
+cs.store(group="optimizer", name="adamw", node=OptimizerConfig)
+cs.store(group="scheduler", name="cosine", node=SchedulerConfig)
+cs.store(group="trainer", name="default", node=TrainerConfig)
+
