@@ -15,6 +15,9 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from loguru import logger
 
+# Try to import pycocotools for RLE decoding, with fallback
+from pycocotools import mask as mask_utils
+
 
 class PromptGenerator:
     """Generate random prompts from ground truth masks."""
@@ -238,12 +241,48 @@ class COCODataset(Dataset):
         self.video_clip_length = video_clip_length
         self.prompt_generator = PromptGenerator(prompt_types)
         
+        # Validate input
+        if not self.coco_json_path.exists():
+            raise FileNotFoundError(f"COCO JSON file not found: {self.coco_json_path}")
+        
         # Load COCO annotations
-        with open(self.coco_json_path, "r") as f:
-            coco_data = json.load(f)
+        try:
+            with open(self.coco_json_path, "r") as f:
+                coco_data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in COCO file {self.coco_json_path}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load COCO file {self.coco_json_path}: {e}")
+        
+        # Validate COCO format
+        required_keys = ["images", "annotations"]
+        for key in required_keys:
+            if key not in coco_data:
+                raise ValueError(f"Missing required key '{key}' in COCO JSON file")
         
         self.images = coco_data.get("images", [])
         self.annotations = coco_data.get("annotations", [])
+        self.categories = coco_data.get("categories", [])
+        
+        if not self.images:
+            raise ValueError("No images found in COCO dataset")
+        if not self.annotations:
+            logger.warning("No annotations found in COCO dataset")
+        
+        # Create image ID to image mapping
+        self.image_id_to_image = {img["id"]: img for img in self.images}
+        
+        # Validate that all images have required fields
+        for img in self.images:
+            required_img_fields = ["id", "video_id", "order_in_video", "path"]
+            for field in required_img_fields:
+                if field not in img:
+                    raise ValueError(f"Image missing required field '{field}': {img}")
+            
+            # Validate image path exists
+            img_path = Path(img["path"])
+            if not img_path.exists():
+                logger.warning(f"Image file not found: {img_path}")
         
         # Group images by video
         self.video_to_images = {}
@@ -259,6 +298,14 @@ class COCODataset(Dataset):
         
         self.video_ids = sorted(self.video_to_images.keys())
         
+        # Create image ID to annotations mapping
+        self.image_id_to_annotations = {}
+        for ann in self.annotations:
+            image_id = ann["image_id"]
+            if image_id not in self.image_id_to_annotations:
+                self.image_id_to_annotations[image_id] = []
+            self.image_id_to_annotations[image_id].append(ann)
+        
         # Default transform
         self.transform = transforms.Compose([
             transforms.Resize(image_size),
@@ -266,7 +313,96 @@ class COCODataset(Dataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
+        # Cache for decoded masks
+        self.mask_cache = {}
+        
         logger.info(f"Loaded COCO dataset with {len(self.video_ids)} videos")
+    
+    def _decode_rle_mask(self, rle_data: Dict, height: int, width: int) -> np.ndarray:
+        """
+        Decode RLE mask to binary mask.
+        
+        Args:
+            rle_data: RLE encoded mask data
+            height: Height of the mask
+            width: Width of the mask
+            
+        Returns:
+            np.ndarray: Decoded binary mask
+        """
+        if not isinstance(rle_data, dict):
+            logger.warning("Invalid RLE data format")
+            return np.zeros((height, width), dtype=np.uint8)
+        
+        try:
+            mask = mask_utils.decode(rle_data)
+            return mask
+        except Exception as e:
+            logger.warning(f"Failed to decode RLE with pycocotools: {e}")
+        # Return empty mask if decoding fails
+        logger.warning("Failed to decode RLE mask, returning empty mask")
+        return np.zeros((height, width), dtype=np.uint8)
+    
+    def _load_gt_masks_for_image(self, image_id: int, height: int, width: int) -> Dict[int, np.ndarray]:
+        """
+        Load ground truth masks for a given image.
+        
+        Args:
+            image_id: ID of the image
+            height: Height of the image
+            width: Width of the image
+            
+        Returns:
+            Dict[int, np.ndarray]: Mapping from object ID to mask
+        """
+        cache_key = (image_id, height, width)
+        if cache_key in self.mask_cache:
+            return self.mask_cache[cache_key]
+        
+        annotations = self.image_id_to_annotations.get(image_id, [])
+        masks = {}
+        
+        for ann in annotations:
+            # Validate annotation
+            if not isinstance(ann, dict):
+                logger.warning(f"Invalid annotation format for image {image_id}")
+                continue
+                
+            obj_id = ann.get("category_id")
+            if obj_id is None:
+                logger.warning(f"Annotation missing category_id for image {image_id}")
+                continue
+                
+            segmentation = ann.get("segmentation")
+            
+            if segmentation is None:
+                continue
+                
+            # Decode the segmentation mask
+            try:
+                if isinstance(segmentation, dict) and "counts" in segmentation:
+                    # RLE format
+                    mask = self._decode_rle_mask(segmentation, height, width)
+                    # Only add non-empty masks
+                    if mask.sum() > 0:
+                        masks[obj_id] = mask.astype(np.float32)
+                elif isinstance(segmentation, list):
+                    # Polygon format - simplified handling
+                    # In practice, you would need to properly rasterize polygons
+                    logger.warning("Polygon segmentation not fully implemented, using placeholder")
+                    mask = np.zeros((height, width), dtype=np.float32)
+                    # Create a simple mask for now
+                    mask[height//4:3*height//4, width//4:3*width//4] = 1.0
+                    # Only add non-empty masks
+                    if mask.sum() > 0:
+                        masks[obj_id] = mask
+            except Exception as e:
+                logger.warning(f"Failed to decode segmentation for annotation {ann.get('id', 'unknown')}: {e}")
+                continue
+        
+        # Cache the result
+        self.mask_cache[cache_key] = masks
+        return masks
     
     def __len__(self):
         return len(self.video_ids)
@@ -291,7 +427,7 @@ class COCODataset(Dataset):
         images = []
         masks = []
         prompts = []
-        
+        height, width = self.image_size
         for i, img_info in enumerate(video_images):
             # Load image
             image_path = img_info["path"]
@@ -299,45 +435,60 @@ class COCODataset(Dataset):
             image_tensor = self.transform(image)
             images.append(image_tensor)
             
-            # Create synthetic masks for multiple objects (simplified - in real implementation would load GT)
-            h, w = self.image_size
-            num_objects = random.randint(1, 3)  # 1-3 objects per frame
-            mask = np.zeros((num_objects, h, w), dtype=np.float32)
+            # Load ground truth masks
+            image_id = img_info["id"]
             
-            # Generate multiple random rectangle masks
-            for obj_idx in range(num_objects):
-                mask_h = random.randint(h // 8, h // 4)
-                mask_w = random.randint(w // 8, w // 4)
-                start_h = random.randint(0, h - mask_h)
-                start_w = random.randint(0, w - mask_w)
-                mask[obj_idx, start_h:start_h + mask_h, start_w:start_w + mask_w] = 1.0
+            gt_masks = self._load_gt_masks_for_image(image_id, height, width)
             
-            masks.append(torch.from_numpy(mask).float())
+            # Convert to tensor format [N, H, W] where N is number of objects
+            if gt_masks:
+                # Stack all masks
+                mask_list = [torch.from_numpy(mask).float() for mask in gt_masks.values()]
+                mask_tensor = torch.stack(mask_list, dim=0)  # [N, H, W]
+            else:
+                # No objects, create empty mask
+                mask_tensor = torch.zeros((1, height, width), dtype=torch.float32)
+            
+            masks.append(mask_tensor)
             
             # Generate prompts only for first frame
             if i == 0:
-                prompt_dict = self.prompt_generator.generate_prompts(mask)
-                prompts.append(prompt_dict)
+                # For first frame, generate prompts for all objects
+                frame_prompts = []
+                for obj_id, mask in gt_masks.items():
+                    prompt_dict = self.prompt_generator.generate_prompts(mask)
+                    frame_prompts.append(prompt_dict)
+                prompts.append(frame_prompts)
             else:
-                prompts.append({})
+                prompts.append([])
         
         # Stack tensors
         images = torch.stack(images)  # [T, C, H, W]
-        masks = torch.stack(masks)  # [T, N, H, W] where N is number of objects
+        
+        # For masks, we need to handle variable number of objects per frame
+        # Find max number of objects across all frames in this clip
+        max_objects = max(mask.shape[0] for mask in masks)
+        
+        # Pad masks to have the same number of objects
+        padded_masks = []
+        for mask in masks:
+            if mask.shape[0] < max_objects:
+                # Pad with zero masks
+                padding = torch.zeros((max_objects - mask.shape[0], height, width), dtype=mask.dtype)
+                mask = torch.cat([mask, padding], dim=0)
+            padded_masks.append(mask)
+        
+        masks = torch.stack(padded_masks)  # [T, N, H, W] where N is max objects
         
         # Generate prompts for all objects in first frame
-        first_frame_prompts = []
-        for obj_idx in range(masks[0].shape[0]):  # For each object
-            obj_mask = masks[0][obj_idx].numpy()
-            prompt_dict = self.prompt_generator.generate_prompts(obj_mask)
-            first_frame_prompts.append(prompt_dict)
+        first_frame_prompts = prompts[0] if prompts[0] else []
         
         return {
             "images": images,
             "masks": masks,
             "prompts": first_frame_prompts,  # Prompts for all objects in first frame
             "video_path": str(video_id),
-            "num_objects": masks[0].shape[0],  # Number of objects
+            "num_objects": max_objects,  # Maximum number of objects in any frame
         }
 
 
