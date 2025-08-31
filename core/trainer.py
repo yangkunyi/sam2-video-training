@@ -14,10 +14,10 @@ import json
 import random
 import numpy as np
 
-from core.sam2 import SAM2Model
-from core.dataset import collate_fn
+from core.sam2model import SAM2Model
+from core.dataset import sam2_collate_fn
 from core.loss import SAM2TrainingLoss
-from config import Config
+from core.config import Config
 
 
 # Import SAM2 data utilities for format conversion
@@ -46,6 +46,9 @@ except ImportError:
         masks: torch.BoolTensor
         metadata: BatchedVideoMetaData
         dict_key: str
+
+
+from torch.utils.data import DataLoader
 
 
 class SAM2LightningModule(L.LightningModule):
@@ -82,13 +85,7 @@ class SAM2LightningModule(L.LightningModule):
             if self.model is None:
                 logger.info("Loading SAM2 model...")
                 self.model = SAM2Model(
-                    checkpoint_path=self.config.model.checkpoint_path,
-                    config_path=self.config.model.config_path,
-                    trainable_modules=self.config.model.trainable_modules,
-                    device=str(self.device),
-                    image_size=self.config.model.image_size,
-                    num_maskmem=self.config.model.num_maskmem,
-                    max_objects=self.config.max_objects,
+                    model_config=self.config.model,
                 )
             self.model.load(str(self.device))
             # Report model info
@@ -148,45 +145,28 @@ class SAM2LightningModule(L.LightningModule):
         else:
             return {"optimizer": optimizer}
 
-    def forward(
-        self,
-        images: torch.Tensor,
-        masks: Optional[torch.Tensor] = None,
-        prompts: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """Forward pass for multiple objects with BatchedVideoDatapoint support."""
-        # Try to convert to BatchedVideoDatapoint format for more efficient processing
-        return self.model(images=images, masks=masks, prompts=prompts)
+    def forward(self, batch: BatchedVideoDatapoint) -> Dict[str, torch.Tensor]:
+        """Forward pass with BatchedVideoDatapoint input."""
+        return self.model(batch)
 
-    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
-        """Training step for multiple objects with efficient batched processing."""
-        images = batch["images"]  # [B, T, C, H, W]
-        masks = batch["masks"]  # [B, T, N, H, W] where N is number of objects
-        prompts = batch["prompts"]
+    def training_step(
+        self, batch: BatchedVideoDatapoint, batch_idx: int
+    ) -> torch.Tensor:
+        """Training step with BatchedVideoDatapoint input."""
+        # Forward pass - batch is already in BatchedVideoDatapoint format
+        outputs = self.forward(batch)
+        pred_masks = outputs.get("pred_masks_high_res", outputs.get("pred_masks"))
 
-        # Forward pass with BatchedVideoDatapoint for efficient processing
-        outputs = self.forward(images, masks, prompts)
-        pred_masks = outputs.get(
-            "pred_masks_high_res", outputs.get("pred_masks", torch.zeros_like(masks))
-        )
+        if pred_masks is None:
+            raise ValueError("Model output missing pred_masks or pred_masks_high_res")
 
-        # Ensure mask dimensions match
-        if pred_masks.shape != masks.shape:
-            if pred_masks.dim() == masks.dim():
-                # Handle multiple objects - ensure we don't exceed target dimensions
-                pred_masks = pred_masks[
-                    :, :, : masks.shape[2], : masks.shape[-2], : masks.shape[-1]
-                ]
-            else:
-                # Add object dimension if missing
-                pred_masks = pred_masks.unsqueeze(2)
-                if pred_masks.shape[2] > masks.shape[2]:
-                    pred_masks = pred_masks[:, :, : masks.shape[2]]
+        # Get ground truth masks from BatchedVideoDatapoint
+        target_masks = batch.masks  # [T, O, H, W]
 
-        # Compute loss with proper handling of multiple objects
+        # Compute loss
         total_loss, loss_components = self.criterion(
             pred_masks=pred_masks,
-            target_masks=masks,
+            target_masks=target_masks,
             return_components=True,
         )
 
@@ -203,35 +183,24 @@ class SAM2LightningModule(L.LightningModule):
 
         return total_loss
 
-    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
-        """Validation step for multiple objects with efficient batched processing."""
-        images = batch["images"]
-        masks = batch["masks"]  # [B, T, N, H, W] where N is number of objects
-        prompts = batch.get("prompts", None)
+    def validation_step(
+        self, batch: BatchedVideoDatapoint, batch_idx: int
+    ) -> torch.Tensor:
+        """Validation step with BatchedVideoDatapoint input."""
+        # Forward pass - batch is already in BatchedVideoDatapoint format
+        outputs = self.forward(batch)
+        pred_masks = outputs.get("pred_masks_high_res", outputs.get("pred_masks"))
 
-        # Forward pass with BatchedVideoDatapoint for efficient processing
-        outputs = self.forward(images, masks, prompts)
-        pred_masks = outputs.get(
-            "pred_masks_high_res", outputs.get("pred_masks", torch.zeros_like(masks))
-        )
+        if pred_masks is None:
+            raise ValueError("Model output missing pred_masks or pred_masks_high_res")
 
-        # Ensure mask dimensions match
-        if pred_masks.shape != masks.shape:
-            if pred_masks.dim() == masks.dim():
-                # Handle multiple objects - ensure we don't exceed target dimensions
-                pred_masks = pred_masks[
-                    :, :, : masks.shape[2], : masks.shape[-2], : masks.shape[-1]
-                ]
-            else:
-                # Add object dimension if missing
-                pred_masks = pred_masks.unsqueeze(2)
-                if pred_masks.shape[2] > masks.shape[2]:
-                    pred_masks = pred_masks[:, :, : masks.shape[2]]
+        # Get ground truth masks from BatchedVideoDatapoint
+        target_masks = batch.masks  # [T, O, H, W]
 
-        # Compute loss with proper handling of multiple objects
+        # Compute loss
         total_loss, loss_components = self.criterion(
             pred_masks=pred_masks,
-            target_masks=masks,
+            target_masks=target_masks,
             return_components=True,
         )
 
@@ -328,44 +297,48 @@ class SAM2LightningDataModule(L.LightningDataModule):
         self.save_hyperparameters()
 
     def setup(self, stage: str):
-        """Setup datasets for multiple objects."""
-        from core.data.dataset import create_dataloader  # Import here to avoid circular
+        """Setup datasets for training and validation."""
+        from core.dataset import COCODataset  # Import here to avoid circular
 
         if stage == "fit":
-            # Use same dataset for train/val for now (can be split differently)
-            self.train_dataset = create_dataloader(
-                dataset_type=self.config.dataset.dataset_type,
-                dataset_path=self.config.dataset.data_path,
-                batch_size=self.config.dataset.batch_size,
-                num_workers=self.config.dataset.num_workers,
-                shuffle=self.config.dataset.shuffle,
-                image_size=self.config.dataset.image_size,
-                video_clip_length=self.config.dataset.video_clip_length,
-                prompt_types=self.config.dataset.prompt_types,
-                num_of_pos_points=self.config.dataset.num_of_pos_points,
-                num_of_neg_points=self.config.dataset.num_of_neg_points,
-                include_center=self.config.dataset.include_center_point,
+            # Training dataset
+            self.train_dataset = COCODataset(
+                config=self.config.data,
+                coco_json_path=self.config.data.train_path,
             )
 
-            # Create validation dataset (could be different split)
-            self.val_dataset = create_dataloader(
-                dataset_type=self.config.valdataset.dataset_type,
-                dataset_path=self.config.valdataset.data_path,
-                batch_size=self.config.valdataset.batch_size,
-                num_workers=self.config.valdataset.num_workers,
-                shuffle=self.config.valdataset.shuffle,
-                image_size=self.config.valdataset.image_size,
-                video_clip_length=self.config.valdataset.video_clip_length,
-                prompt_types=self.config.valdataset.prompt_types,
-                num_of_pos_points=self.config.valdataset.num_of_pos_points,
-                num_of_neg_points=self.config.valdataset.num_of_neg_points,
-                include_center=self.config.valdataset.include_center_point,
+            # Validation dataset
+            self.val_dataset = COCODataset(
+                config=self.config.data,
+                coco_json_path=self.config.data.val_path,
             )
 
     def train_dataloader(self):
         """Return training dataloader."""
-        return self.train_dataset
+        if self.train_dataset is None:
+            raise RuntimeError("Training dataset not initialized. Call setup() first.")
+
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.config.data.batch_size,
+            num_workers=self.config.data.num_workers,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=sam2_collate_fn,
+        )
 
     def val_dataloader(self):
         """Return validation dataloader."""
-        return self.val_dataset
+        if self.val_dataset is None:
+            raise RuntimeError(
+                "Validation dataset not initialized. Call setup() first."
+            )
+
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.config.data.batch_size,
+            num_workers=self.config.data.num_workers,
+            shuffle=False,
+            pin_memory=True,
+            collate_fn=sam2_collate_fn,
+        )

@@ -1,99 +1,119 @@
 """
-Main training script for SAM2 video training.
-This is the unified entry point for all SAM2 training functionality.
+Simplified SAM2 video training script.
+Clean, direct implementation focused on core training functionality.
 """
 
+import os
 import sys
 from pathlib import Path
-from typing import Optional
-from loguru import logger
-from dataclasses import asdict
 
-import lightning as L
-from lightning.pytorch.callbacks import (
-    ModelCheckpoint,
-    LearningRateMonitor,
-    EarlyStopping,
-)
-from lightning.pytorch.loggers import TensorBoardLogger
-try:
-    from lightning.pytorch.loggers import WandbLogger
-except ImportError:
-    WandbLogger = None
-# Hydra imports
 import hydra
+import hydra.core.global_hydra as ghd
+import lightning as L
+from hydra.core.hydra_config import HydraConfig
+from lightning.pytorch.callbacks import (
+    EarlyStopping,
+    LearningRateMonitor,
+    ModelCheckpoint,
+)
+from loguru import logger
 from omegaconf import DictConfig, OmegaConf
+from swanlab.integration.pytorch_lightning import SwanLabLogger
 
-from config import Config
-from core.training.trainer import SAM2LightningModule, SAM2LightningDataModule
+from core.config import Config
+from core.trainer import SAM2LightningDataModule, SAM2LightningModule
+
+from hydra.core.global_hydra import GlobalHydra
+
+GlobalHydra.instance().clear()
 
 
-def setup_logging(log_level: str = "INFO"):
-    """Setup logging configuration."""
+@hydra.main(config_path="configs", config_name="config", version_base=None)
+@logger.catch(onerror=lambda _: sys.exit(1))
+def main(cfg: DictConfig) -> None:
+    """Main entry point with consolidated training logic and Hydra configuration management."""
+
+    OUTPUT_DIR = Path(HydraConfig.get().run.dir)
+    config: Config = OmegaConf.to_object(cfg)
+    # =====================================
+    # SECTION 1: LOGGING SETUP
+    # =====================================
+    log_level = cfg.get("log_level", "INFO")
     logger.remove()
     logger.add(
         sys.stderr,
         level=log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-        "<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-        "<level>{message}</level>",
     )
-
-
-def create_trainer(config: Config, callbacks: Optional[list] = None) -> L.Trainer:
-    """Create Lightning trainer instance."""
-    # Create callbacks
-    if callbacks is None:
-        callbacks = []
-
-    # Model checkpoint callback
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=Path(config.output_dir) / "checkpoints",
-        filename="sam2-epoch{epoch:02d}-val_loss{val/total_loss:.4f}",
-        save_top_k=3,
-        monitor="val/total_loss",
-        mode="min",
-        save_last=True,
+    logger.add(OUTPUT_DIR / "training.log", rotation="10 MB", retention="10 days")
+    logger.info(f"Initializing SwanLab logger for project: {config.swanlab.project}")
+    swanlab_logger = SwanLabLogger(
+        project=config.swanlab.project,
+        experiment_name=f"sam2-video-{config.model.prompt_type}",
+        description="SAM2 Video Training with Multiple Prompts",
+        config=cfg,
+        logdir=os.path.join(str(OUTPUT_DIR), "logs"),
     )
-    callbacks.append(checkpoint_callback)
+    # =====================================
+    # SECTION 2: CONFIGURATION & SETUP
+    # =====================================
+    # Convert to structured config
 
-    # Learning rate monitor
-    lr_monitor = LearningRateMonitor(logging_interval="step")
-    callbacks.append(lr_monitor)
+    # Set random seed
+    L.seed_everything(config.seed)
 
-    # Early stopping (optional)
-    if config.trainer.early_stopping_patience:
-        early_stopping = EarlyStopping(
+    logger.info("Starting SAM2 training...")
+    logger.info(f"Configuration: {OmegaConf.to_yaml(config)}")
+
+    # =====================================
+    # SECTION 3: DIRECTORY & CONFIG SETUP
+    # =====================================
+    # Create output directory
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Save configuration
+    config_path = OUTPUT_DIR / "config.yaml"
+    OmegaConf.save(config, config_path)
+    logger.info(f"Configuration saved to {config_path}")
+
+    # =====================================
+    # SECTION 4: LIGHTNING COMPONENTS
+    # =====================================
+    lightning_module = SAM2LightningModule(config)
+    data_module = SAM2LightningDataModule(config)
+
+    # =====================================
+    # SECTION 5: CALLBACK CONFIGURATION
+    # =====================================
+    callbacks = [
+        ModelCheckpoint(
+            dirpath=OUTPUT_DIR / "checkpoints",
+            filename="sam2-epoch{epoch:02d}-val_loss{val/total_loss:.4f}",
+            save_top_k=3,
             monitor="val/total_loss",
-            patience=config.trainer.early_stopping_patience,
             mode="min",
-            verbose=True,
-        )
-        callbacks.append(early_stopping)
+            save_last=True,
+        ),
+        LearningRateMonitor(logging_interval="step"),
+    ]
 
-    # Create logger
-    pl_logger = None
-    if config.use_wandb:
-        try:
-            from lightning.pytorch.loggers import WandbLogger
-            pl_logger = WandbLogger(
-                project=config.wandb_project,
-                name=f"sam2-training-{Path(config.output_dir).name}",
-                save_dir=config.output_dir,
+    # Optional early stopping
+    if config.trainer.early_stopping_patience:
+        callbacks.append(
+            EarlyStopping(
+                monitor="val/total_loss",
+                patience=config.trainer.early_stopping_patience,
+                mode="min",
+                verbose=True,
             )
-            # Log hyperparameters
-            pl_logger.log_hyperparams(asdict(config))
-        except ImportError:
-            logger.warning("wandb not available, falling back to TensorBoard")
-            pl_logger = None
-    
-    if pl_logger is None:
-        pl_logger = TensorBoardLogger(
-            save_dir=config.output_dir,
-            name="sam2_training",
         )
 
-    # Create trainer
+    # =====================================
+    # SECTION 6: LOGGER SETUP
+    # =====================================
+
+    # =====================================
+    # SECTION 7: TRAINER CREATION & EXECUTION
+    # =====================================
     trainer = L.Trainer(
         accelerator=config.trainer.accelerator,
         devices=config.trainer.devices,
@@ -107,142 +127,20 @@ def create_trainer(config: Config, callbacks: Optional[list] = None) -> L.Traine
         num_sanity_val_steps=config.trainer.num_sanity_val_steps,
         enable_checkpointing=config.trainer.enable_checkpointing,
         enable_progress_bar=config.trainer.enable_progress_bar,
-        logger=pl_logger,
+        logger=swanlab_logger,
         callbacks=callbacks,
         log_every_n_steps=config.trainer.log_every_n_steps,
-        default_root_dir=config.output_dir,
+        default_root_dir=OUTPUT_DIR,
     )
-
-    return trainer
-
-
-def train(config: Config):
-    """Main training function."""
-    logger.info("Starting SAM2 training...")
-    logger.info(f"Configuration: {OmegaConf.to_yaml(config)}")
-
-    # Create output directory
-    output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save configuration using Hydra's native method
-    config_path = output_dir / "config.yaml"
-    OmegaConf.save(config, config_path)
-    logger.info(f"Configuration saved to {config_path}")
-
-    # Convert DictConfig to Config dataclass for Lightning components
-
-    lightning_module = SAM2LightningModule(config)
-    data_module = SAM2LightningDataModule(config)
-    trainer = create_trainer(config)
 
     # Start training
     logger.info("Starting training...")
     trainer.fit(lightning_module, data_module)
 
     logger.info("Training completed!")
-    logger.info(f"Outputs saved to: {output_dir}")
-
-
-@hydra.main(config_path="configs", config_name="config", version_base=None)
-def hydra_main(cfg: DictConfig) -> None:
-    """Main entry point using Hydra."""
-    # Setup logging
-    typed_cfg: Config = OmegaConf.to_object(cfg)
-    setup_logging(cfg.log_level)
-
-    # Handle config creation
-    if hydra.core.hydra_config.HydraConfig.get().mode == hydra.types.RunMode.MULTIRUN:
-        # In multirun mode, we don't want to create sample configs
-        pass
-    else:
-        # Check if we're asked to create a sample config
-        # This can be done by running with a special config or flag
-        pass
-
-    # Set random seed
-    L.seed_everything(cfg.seed)
-
-    # Start training
-    train(typed_cfg)
-
-
-# Keep the original main function for backward compatibility
-def main():
-    """Main entry point - kept for backward compatibility."""
-    # For backward compatibility, we can still support command line args
-    # but prefer using Hydra
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="SAM2 Video Training")
-    parser.add_argument("--config", type=str, help="Path to configuration file")
-    parser.add_argument(
-        "--create-config", action="store_true", help="Create sample config and exit"
-    )
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-
-    # Common overrides for quick testing
-    parser.add_argument("--seed", type=int, default=None, help="Random seed")
-    parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
-    parser.add_argument(
-        "--model-checkpoint", type=str, default=None, help="Model checkpoint path"
-    )
-    parser.add_argument(
-        "--data-path", type=str, default=None, help="Path to training data"
-    )
-    parser.add_argument("--max-epochs", type=int, default=None, help="Maximum epochs")
-    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
-    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
-
-    args = parser.parse_args()
-
-    # Setup logging
-    log_level = "DEBUG" if args.debug else "INFO"
-    setup_logging(log_level)
-
-    # Handle config creation
-    if args.create_config:
-        # Create sample config using Hydra's defaults
-        from omegaconf import OmegaConf
-
-        sample_config = OmegaConf.load("configs/config.yaml")
-        with open("sample_config.yaml", "w") as f:
-            f.write(OmegaConf.to_yaml(sample_config))
-        logger.info("Sample configuration saved to sample_config.yaml")
-        logger.info("Please update the paths in sample_config.yaml before training.")
-        return
-
-    # For backward compatibility, run with Hydra
-    # But we need to pass the command line args to Hydra
-    # This is a bit complex, so we'll just call the hydra main directly
-    # and let the user use Hydra's command line syntax
-
-    # If specific args are provided, we can handle them
-    if any(
-        [
-            args.config,
-            args.seed,
-            args.output_dir,
-            args.model_checkpoint,
-            args.data_path,
-            args.max_epochs,
-            args.batch_size,
-            args.lr,
-            args.no_wandb,
-        ]
-    ):
-        logger.warning(
-            "Using legacy command line arguments. Consider using Hydra's command line overrides instead."
-        )
-        logger.warning(
-            "Example: python train.py model.checkpoint_path=/path/to/checkpoint"
-        )
-
-    # Run with Hydra
-    hydra_main()
+    logger.info(f"Outputs saved to: {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
-    hydra_main()
+    # pass
+    main()

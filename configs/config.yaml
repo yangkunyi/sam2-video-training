@@ -1,30 +1,21 @@
 defaults:
   - model: sam2
-  - dataset: coco
-  - valdataset: coco
+  - data: coco
   - loss: default
   - optimizer: adamw
   - scheduler: cosine
   - trainer: default
+  - swanlab: default
   - _self_
-
-# Multi-object tracking parameters
-max_objects: 10
 
 # Global settings
 seed: 42
 use_wandb: true
-wandb_project: sam2-training
-output_dir: ./outputs
+wandb_project: sam2-video-training
 
 # Logging
 log_level: INFO
-save_dir: ./checkpoints
 
 hydra:
   run:
     dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
-
-model:
-  checkpoint_path: /bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/checkpoints/sam2.1_hiera_tiny.pt
-  config_path: sam2/sam2.1_hiera_t.yaml
