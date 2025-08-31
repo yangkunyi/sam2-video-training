@@ -14,9 +14,9 @@ import json
 import random
 import numpy as np
 
-from core.model.sam2 import SAM2Model
-from core.data.dataset import collate_fn
-from core.training.loss import SAM2TrainingLoss
+from core.sam2 import SAM2Model
+from core.dataset import collate_fn
+from core.loss import SAM2TrainingLoss
 from config import Config
 
 

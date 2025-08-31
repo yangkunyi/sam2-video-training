@@ -755,3 +755,70 @@ def create_dataloader(
         collate_fn=collate_fn,
         pin_memory=True,
     )
+
+
+def sam2_train_collate_fn(batch):
+    """
+    Custom collate function for SAM2Train that creates proper batch format.
+    
+    Args:
+        batch: List of dataset items, each containing 'images', 'masks', 'prompts', etc.
+        
+    Returns:
+        Dictionary with batched tensors in the format expected by SAM2Model
+    """
+    # Extract data from batch items
+    images_list = []
+    masks_list = []
+    prompts_list = []
+    video_paths = []
+    num_objects_list = []
+    
+    for item in batch:
+        images_list.append(item["images"])
+        masks_list.append(item["masks"])
+        prompts_list.append(item.get("prompts", []))
+        video_paths.append(item.get("video_path", ""))
+        num_objects_list.append(item.get("num_objects", 1))
+    
+    # Stack tensors
+    # images: [B, T, C, H, W]
+    images = torch.stack(images_list, dim=0)
+    # masks: [B, T, N, H, W]
+    masks = torch.stack(masks_list, dim=0)
+    
+    return {
+        "images": images,
+        "masks": masks,
+        "prompts": prompts_list,
+        "video_paths": video_paths,
+        "num_objects": num_objects_list,
+    }
+
+
+def create_sam2_dataloader(
+    dataset: Dataset,
+    batch_size: int = 1,
+    shuffle: bool = True,
+    num_workers: int = 0,
+) -> DataLoader:
+    """
+    Create a DataLoader with SAM2Train-compatible collate function.
+    
+    Args:
+        dataset: Dataset instance
+        batch_size: Batch size
+        shuffle: Whether to shuffle data
+        num_workers: Number of worker processes
+        
+    Returns:
+        DataLoader with SAM2 collate function
+    """
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=sam2_train_collate_fn,
+        pin_memory=True,
+    )

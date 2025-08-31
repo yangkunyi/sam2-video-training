@@ -18,3 +18,32 @@ use_signed_tpos_enc_to_obj_ptrs: true
 multimask_output_in_sam: true
 multimask_output_for_tracking: true
 max_objects: 10
+
+# SAM2Train specific parameters
+prob_to_use_pt_input_for_train: 0.0
+prob_to_use_pt_input_for_eval: 0.0
+prob_to_use_box_input_for_train: 0.0
+prob_to_use_box_input_for_eval: 0.0
+
+# Frame correction parameters
+num_frames_to_correct_for_train: 1
+num_frames_to_correct_for_eval: 1
+rand_frames_to_correct_for_train: false
+rand_frames_to_correct_for_eval: false
+
+# Initial conditioning frames
+num_init_cond_frames_for_train: 1
+num_init_cond_frames_for_eval: 1
+rand_init_cond_frames_for_train: true
+rand_init_cond_frames_for_eval: false
+
+# Point sampling parameters
+add_all_frames_to_correct_as_cond: false
+num_correction_pt_per_frame: 7
+pt_sampling_for_eval: "center"
+pt_sampling_for_train: "uniform"
+prob_to_sample_from_gt_for_train: 0.0
+
+# Additional training parameters
+use_act_ckpt_iterative_pt_sampling: false
+forward_backbone_per_frame_for_eval: false

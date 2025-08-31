@@ -16,14 +16,13 @@ from lightning.pytorch.callbacks import (
     EarlyStopping,
 )
 from lightning.pytorch.loggers import TensorBoardLogger
-from swanlab.integration.pytorch_lightning import SwanLabLogger
-
+try:
+    from lightning.pytorch.loggers import WandbLogger
+except ImportError:
+    WandbLogger = None
 # Hydra imports
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from icecream import ic
-
-# ic.disabl()
 
 from config import Config
 from core.training.trainer import SAM2LightningModule, SAM2LightningDataModule
@@ -75,15 +74,20 @@ def create_trainer(config: Config, callbacks: Optional[list] = None) -> L.Traine
     # Create logger
     pl_logger = None
     if config.use_wandb:
-        pl_logger = SwanLabLogger(
-            project=config.wandb_project,
-            experiment_name=f"sam2-training-{Path(config.output_dir).name}",
-            logdir=config.output_dir,
-        )
-
-        # Log hyperparameters
-        pl_logger.log_hyperparams(asdict(config))
-    else:
+        try:
+            from lightning.pytorch.loggers import WandbLogger
+            pl_logger = WandbLogger(
+                project=config.wandb_project,
+                name=f"sam2-training-{Path(config.output_dir).name}",
+                save_dir=config.output_dir,
+            )
+            # Log hyperparameters
+            pl_logger.log_hyperparams(asdict(config))
+        except ImportError:
+            logger.warning("wandb not available, falling back to TensorBoard")
+            pl_logger = None
+    
+    if pl_logger is None:
         pl_logger = TensorBoardLogger(
             save_dir=config.output_dir,
             name="sam2_training",

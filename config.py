@@ -34,6 +34,35 @@ class ModelConfig:
     multimask_output_in_sam: bool = True
     multimask_output_for_tracking: bool = True
     max_objects: int = 10  # Maximum number of objects to track simultaneously
+    
+    # SAM2Train specific parameters
+    prob_to_use_pt_input_for_train: float = 0.0
+    prob_to_use_pt_input_for_eval: float = 0.0
+    prob_to_use_box_input_for_train: float = 0.0
+    prob_to_use_box_input_for_eval: float = 0.0
+    
+    # Frame correction parameters
+    num_frames_to_correct_for_train: int = 1
+    num_frames_to_correct_for_eval: int = 1
+    rand_frames_to_correct_for_train: bool = False
+    rand_frames_to_correct_for_eval: bool = False
+    
+    # Initial conditioning frames
+    num_init_cond_frames_for_train: int = 1
+    num_init_cond_frames_for_eval: int = 1
+    rand_init_cond_frames_for_train: bool = True
+    rand_init_cond_frames_for_eval: bool = False
+    
+    # Point sampling parameters
+    add_all_frames_to_correct_as_cond: bool = False
+    num_correction_pt_per_frame: int = 7
+    pt_sampling_for_eval: str = "center"
+    pt_sampling_for_train: str = "uniform"
+    prob_to_sample_from_gt_for_train: float = 0.0
+    
+    # Additional training parameters
+    use_act_ckpt_iterative_pt_sampling: bool = False
+    forward_backbone_per_frame_for_eval: bool = False  # Maximum number of objects to track simultaneously
 
 
 @dataclass

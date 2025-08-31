@@ -8,7 +8,7 @@ num_workers: 16
 shuffle: false
 
 # Prompt configuration
-prompt_types: [point]
+prompt_types: ["point"]
 num_of_pos_points: 1
 num_of_neg_points: 0
 include_center_point: true
