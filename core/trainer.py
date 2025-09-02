@@ -16,7 +16,7 @@ import numpy as np
 
 from core.sam2model import SAM2Model
 from core.dataset import sam2_collate_fn
-from core.loss import SAM2TrainingLoss
+from core.loss_fns import MultiStepMultiMasksAndIous, CORE_LOSS_KEY
 from core.config import Config
 
 
@@ -68,12 +68,14 @@ class SAM2LightningModule(L.LightningModule):
 
         # Initialize model
         self.model = None
-        self.criterion = SAM2TrainingLoss(
-            bce_weight=config.loss.bce_weight,
-            dice_weight=config.loss.dice_weight,
-            iou_weight=config.loss.iou_weight,
-            temporal_weight=config.loss.temporal_weight,
-        )
+        # Build weight_dict from config
+        weight_dict = {
+            "loss_mask": config.loss.bce_weight,
+            "loss_dice": config.loss.dice_weight,
+            "loss_iou": config.loss.iou_weight,
+            "loss_class": 0.0,
+        }
+        self.criterion = MultiStepMultiMasksAndIous(weight_dict=weight_dict)
 
         # Training state
         self.best_val_loss = float("inf")
@@ -145,8 +147,8 @@ class SAM2LightningModule(L.LightningModule):
         else:
             return {"optimizer": optimizer}
 
-    def forward(self, batch: BatchedVideoDatapoint) -> Dict[str, torch.Tensor]:
-        """Forward pass with BatchedVideoDatapoint input."""
+    def forward(self, batch: BatchedVideoDatapoint):
+        """Forward pass returning per-frame outputs (list of dicts)."""
         return self.model(batch)
 
     def training_step(
@@ -154,26 +156,20 @@ class SAM2LightningModule(L.LightningModule):
     ) -> torch.Tensor:
         """Training step with BatchedVideoDatapoint input."""
         # Forward pass - batch is already in BatchedVideoDatapoint format
-        outputs = self.forward(batch)
-        pred_masks = outputs.get("pred_masks_high_res", outputs.get("pred_masks"))
+        outs_per_frame = self.forward(batch)
 
-        if pred_masks is None:
-            raise ValueError("Model output missing pred_masks or pred_masks_high_res")
+        # Ground truth masks [T, N, H, W]
+        target_masks = batch.masks
 
-        # Get ground truth masks from BatchedVideoDatapoint
-        target_masks = batch.masks  # [T, O, H, W]
-
-        # Compute loss
-        total_loss, loss_components = self.criterion(
-            pred_masks=pred_masks,
-            target_masks=target_masks,
-            return_components=True,
-        )
+        # Compute multi-step loss across frames
+        losses = self.criterion(outs_per_frame, target_masks)
+        total_loss = losses[CORE_LOSS_KEY]
 
         # Log metrics
         self.log("train/total_loss", total_loss, prog_bar=True, logger=True)
-        for name, value in loss_components.items():
-            self.log(f"train/{name}", value, logger=True)
+        self.log("train/loss_mask", losses["loss_mask"], logger=True)
+        self.log("train/loss_dice", losses["loss_dice"], logger=True)
+        self.log("train/loss_iou", losses["loss_iou"], logger=True)
 
         # Log learning rate
         sch = self.lr_schedulers()
@@ -188,29 +184,19 @@ class SAM2LightningModule(L.LightningModule):
     ) -> torch.Tensor:
         """Validation step with BatchedVideoDatapoint input."""
         # Forward pass - batch is already in BatchedVideoDatapoint format
-        outputs = self.forward(batch)
-        pred_masks = outputs.get("pred_masks_high_res", outputs.get("pred_masks"))
+        outs_per_frame = self.forward(batch)
 
-        if pred_masks is None:
-            raise ValueError("Model output missing pred_masks or pred_masks_high_res")
+        # Ground truth masks [T, N, H, W]
+        target_masks = batch.masks
 
-        # Get ground truth masks from BatchedVideoDatapoint
-        target_masks = batch.masks  # [T, O, H, W]
-
-        # Compute loss
-        total_loss, loss_components = self.criterion(
-            pred_masks=pred_masks,
-            target_masks=target_masks,
-            return_components=True,
-        )
+        # Compute multi-step loss across frames
+        losses = self.criterion(outs_per_frame, target_masks)
+        total_loss = losses[CORE_LOSS_KEY]
+        
 
         # Store for epoch end
-        self.val_step_outputs.append(
-            {
-                "val_loss": total_loss,
-                **{f"val_{k}": v for k, v in loss_components.items()},
-            }
-        )
+        self.val_step_outputs.append({f"val/{k}": v for k, v in losses.items()}),
+
 
         return total_loss
 
@@ -227,10 +213,10 @@ class SAM2LightningModule(L.LightningModule):
 
         # Log metrics
         for name, value in metrics.items():
-            self.log(name, value, prog_bar=(name == "val_loss"), logger=True)
+            self.log(name, value, prog_bar=(name == "val/total_loss"), logger=True)
 
         # Check for best model
-        val_loss = metrics["val_loss"]
+        val_loss = metrics["val/total_loss"]
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
             self._save_best_model()

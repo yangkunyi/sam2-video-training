@@ -63,7 +63,7 @@ class DataConfig:
 
     num_workers: int = 4
     batch_size: int = 1  # Limited by GPU memory
-    num_categories: Optional[int] = None  # For COCO dataset
+    num_categories: Optional[int] = 13  # For COCO dataset
 
 
 @dataclass
@@ -140,6 +140,12 @@ class Config:
     use_wandb: bool = True
     wandb_project: str = "sam2-video-training"
     log_level: str = "INFO"
+    output_dir: str = "outputs"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a plain dict representation for logging/checkpointing."""
+        from dataclasses import asdict
+        return asdict(self)
 
 
 cs = ConfigStore.instance()

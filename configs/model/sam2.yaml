@@ -23,7 +23,7 @@ prompt_type: point
 forward_backbone_per_frame_for_eval: false
 
 # Prompt generation parameters
-num_pos_points: 1
+num_pos_points: 3
 num_neg_points: 0
 include_center: true
 

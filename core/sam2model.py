@@ -15,13 +15,17 @@ import torch
 import torch.nn as nn
 from loguru import logger
 from sam2.build_sam import build_sam2
+
 # SAM2 core imports
 from sam2.modeling.sam2_base import SAM2Base
 
 from core import utils
+
 # Local imports
 from core.config import ModelConfig
 from core.data_utils import BatchedVideoDatapoint
+from core.utils import extract_shape_info
+from core.utils import merge_object_results_to_category
 
 
 class SAM2Model(SAM2Base):
@@ -35,6 +39,8 @@ class SAM2Model(SAM2Base):
     - Configuration management and utility methods
     - Direct inheritance from SAM2Base for better performance
     - Sequential frame processing for video object tracking
+    - Only support batch size one.
+    - Not use the multi-mask tracking feature.
     """
 
     def __init__(
@@ -77,9 +83,17 @@ class SAM2Model(SAM2Base):
         for attr_name in dir(sam2_model):
             if attr_name.startswith("_"):  # 私有成员
                 continue
-            if hasattr(self, attr_name):  # SAM2Base 已经有的
-                continue
-            if attr_name in ["forward", "forward_image", "device"]:
+            if attr_name in [
+                "forward",
+                "forward_image",
+                "device",
+                "load",
+                "prepare_prompt_inputs",
+                "track_step",
+                "count_trainable_parameters",
+                "count_total_parameters",
+                "get_info",
+            ]:
                 continue
             setattr(self, attr_name, getattr(sam2_model, attr_name))
 
@@ -106,7 +120,13 @@ class SAM2Model(SAM2Base):
         return self
 
     def forward(self, input: BatchedVideoDatapoint) -> List[Dict[str, torch.Tensor]]:
-        """Forward pass through simplified SAM2 training."""
+        """Forward pass through simplified SAM2 training.
+
+        Returns a list of per-frame dictionaries aggregated at category level,
+        where each dict contains the keys expected by the loss, e.g.,
+        "multistep_pred_multimasks_high_res", "multistep_pred_ious",
+        and "multistep_object_score_logits".
+        """
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
             backbone_out = self.forward_image(input.flat_img_batch)
@@ -116,8 +136,13 @@ class SAM2Model(SAM2Base):
 
         backbone_out = self.prepare_prompt_inputs(backbone_out, input)
         previous_stages_out = self.forward_tracking(backbone_out, input)
+        out = merge_object_results_to_category(
+            previous_stages_out,
+            backbone_out["obj_to_cat"],
+            backbone_out["num_categories"],
+        )
 
-        return previous_stages_out
+        return out
 
     def prepare_prompt_inputs(self, backbone_out, input, start_frame_idx=0):
         """
@@ -136,7 +161,6 @@ class SAM2Model(SAM2Base):
             stage_id: masks.unsqueeze(1)  # [B, 1, H_im, W_im]
             for stage_id, masks in enumerate(input.masks)
         }
-        backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
         backbone_out["num_frames"] = input.num_frames
 
         # Initialize prompt containers
@@ -145,8 +169,11 @@ class SAM2Model(SAM2Base):
 
         # Generate prompt for first frame only
         first_frame_cat_mask = gt_masks_per_frame[start_frame_idx]
-        first_frame_mask, obj_to_cat = utils.cat_to_obj_mask(first_frame_cat_mask)
+        first_frame_mask, obj_to_cat, num_catergories = utils.cat_to_obj_mask(
+            first_frame_cat_mask
+        )
         backbone_out["obj_to_cat"] = obj_to_cat
+        backbone_out["num_categories"] = num_catergories
 
         if self.prompt_type == "mask":
             # Use GT mask directly as prompt
@@ -225,14 +252,20 @@ class SAM2Model(SAM2Base):
 
         num_frames = backbone_out["num_frames"]
         all_frame_outputs = []
+        output_dict = {
+            "cond_frame_outputs": {},  # dict containing {frame_idx: <out>}
+            "non_cond_frame_outputs": {},  # dict containing {frame_idx: <out>}
+        }
 
         # Sequential processing: [0, 1, 2, ..., num_frames-1]
+        number_of_objects = len(backbone_out["obj_to_cat"])
         for frame_idx in range(num_frames):
             # First frame is conditioning frame (has prompt), others are not
             is_init_cond_frame = frame_idx == 0
 
             # Get the image features for current frame
-            img_ids = input.flat_obj_to_img_idx[frame_idx]
+            # img_ids = input.flat_obj_to_img_idx[frame_idx]
+            img_ids = torch.tensor([frame_idx]).repeat(number_of_objects)
             if img_feats_already_computed:
                 # Retrieve image features according to img_ids (if already computed)
                 current_vision_feats = [x[:, img_ids] for x in vision_feats]
@@ -259,20 +292,17 @@ class SAM2Model(SAM2Base):
                     frame_idx, None
                 ),
                 mask_inputs=backbone_out["mask_inputs_per_frame"].get(frame_idx, None),
-                gt_masks=backbone_out["gt_masks_per_frame"].get(frame_idx, None),
                 num_frames=num_frames,
+                output_dict=output_dict,
             )
 
             all_frame_outputs.append(current_out)
+            if is_init_cond_frame:
+                output_dict["cond_frame_outputs"][frame_idx] = current_out
+            else:
+                output_dict["non_cond_frame_outputs"][frame_idx] = current_out
 
         if return_dict:
-            # Convert to dict format if requested
-            output_dict = {
-                "cond_frame_outputs": {0: all_frame_outputs[0]},  # Only first frame
-                "non_cond_frame_outputs": {
-                    i: all_frame_outputs[i] for i in range(1, num_frames)
-                },
-            }
             return output_dict
 
         # Make DDP happy with activation checkpointing by removing unused keys
@@ -295,7 +325,6 @@ class SAM2Model(SAM2Base):
         track_in_reverse=False,  # tracking in reverse time order (for demo usage)
         run_mem_encoder=True,  # Whether to run the memory encoder on the predicted masks.
         prev_sam_mask_logits=None,  # The previously predicted SAM mask logits.
-        gt_masks=None,
         output_dict=None,  # Kept for compatibility but not used in simple version
     ):
         """

@@ -75,7 +75,7 @@ def generate_point_prompt(
         # 采样正样本点
         if include_center and num_pos_points > 0:
             # 中心点作为第一个正样本
-            pos_pts = [center]
+            pos_pts = [center.unsqueeze(0)]
             need_extra = max(0, num_pos_points - 1)
         else:
             pos_pts = []
@@ -89,7 +89,7 @@ def generate_point_prompt(
 
         # 拼成正样本张量
         if num_pos_points > 0:
-            pos_pts = torch.cat(pos_pts, 0)[:num_pos_points]  # 裁剪到指定数量
+            pos_pts = torch.cat(pos_pts, dim=0)  # 裁剪到指定数量
         else:
             pos_pts = torch.empty(0, 2, dtype=dtype, device=device)
 
@@ -110,7 +110,6 @@ def generate_point_prompt(
                 torch.zeros(neg_pts.shape[0], dtype=torch.int32, device=device),
             ]
         )
-
         points_all[b] = pts
         labels_all[b] = lbls
 
@@ -161,28 +160,31 @@ def generate_box_prompt(mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
 def find_connected_components(mask: torch.Tensor) -> List[torch.Tensor]:
     """
     Find connected components in a binary mask and return list of individual component masks.
-    Uses OpenCV's erosion and dilation operations to connect small regions.
-
+    Uses morphological opening (erosion followed by dilation) to eliminate small regions.
     Args:
         mask: Binary mask tensor [H, W]
-
     Returns:
         List of individual component masks as tensors
     """
     # Convert to numpy for OpenCV operations
     mask_np = mask.cpu().numpy().astype(np.uint8)
+
     # Define kernel for morphological operations
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    # Apply dilation to connect small regions
-    dilated_mask = cv2.dilate(mask_np, kernel, iterations=1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
+
+    # Apply opening operation: erosion followed by dilation
+    # This eliminates small regions and noise
+    eroded_mask = cv2.erode(mask_np, kernel, iterations=1)
+    opened_mask = cv2.dilate(eroded_mask, kernel, iterations=1)
+
     # Use OpenCV's connectedComponents to find connected components
-    num_components, labeled_mask = cv2.connectedComponents(dilated_mask)
+    num_components, labeled_mask = cv2.connectedComponents(opened_mask)
+
     connected_areas = []
     for component_id in range(1, num_components):  # Skip background (0)
         # Create binary mask for this component
         component_mask = (labeled_mask == component_id).astype(np.uint8)
-        # Apply erosion to restore original size (optional)
-        component_mask = cv2.erode(component_mask, kernel, iterations=1)
+
         # Convert to PyTorch tensor and move to original device
         component_tensor = torch.from_numpy(component_mask.astype(np.float32)).to(
             mask.device
@@ -192,7 +194,7 @@ def find_connected_components(mask: torch.Tensor) -> List[torch.Tensor]:
     return connected_areas
 
 
-def cat_to_obj_mask(cat_frame_masks) -> Tuple[torch.Tensor, Dict[int, int]]:
+def cat_to_obj_mask(cat_frame_masks) -> Tuple[torch.Tensor, List[int], int]:
     """
     Splits a single mask into multiple masks for each object.
 
@@ -205,8 +207,7 @@ def cat_to_obj_mask(cat_frame_masks) -> Tuple[torch.Tensor, Dict[int, int]]:
         - obj_to_cat_mapping: Dict mapping object IDs to category IDs
     """
     N = cat_frame_masks.shape[0]
-    obj_id = 0
-    obj_to_cat = {}
+    obj_to_cat = []
     obj_masks_list = []
     for catergory_idx in range(N):
         category_mask = cat_frame_masks[catergory_idx][0]
@@ -215,9 +216,187 @@ def cat_to_obj_mask(cat_frame_masks) -> Tuple[torch.Tensor, Dict[int, int]]:
         connected_areas = find_connected_components(category_mask)
         for area_mask in connected_areas:
             obj_masks_list.append(area_mask)
-            obj_to_cat[obj_id] = catergory_idx
-            obj_id += 1
-    return torch.stack(obj_masks_list).unsqueeze(1), obj_to_cat
+            obj_to_cat.append(catergory_idx)
+    return torch.stack(obj_masks_list).unsqueeze(1), obj_to_cat, N
+
+
+def merge_object_results_to_category(
+    previous_stages_out: List[Dict[str, Any]],
+    obj_to_cat: List[int],
+    num_categories: int,
+) -> List[Dict[str, Any]]:
+    """
+    Merge per-object outputs back to per-category outputs for each frame.
+
+    Rules
+    - Mask-like tensors (logits) are merged by pixelwise max across objects in the same category
+      to approximate logical OR at the probability level.
+    - Score/IoU-like tensors are merged by weighted average using per-object mask area
+      (sum of sigmoid(logits)) as weights. If weights sum to 0 for a category, fall back to mean.
+    - Null (None) values are ignored/preserved as None.
+    - Mask memory related items are ignored (not included in merged output).
+
+    Args:
+        previous_stages_out: List of per-frame dicts as produced by forward_tracking
+        obj_to_cat: List mapping object index -> category index
+
+    Returns:
+        List of per-frame dicts aggregated to category level.
+    """
+
+    if not previous_stages_out:
+        return []
+
+    # Determine category groups from obj_to_cat (ensure contiguous categories 0..max)
+    if len(obj_to_cat) == 0:
+        return [
+            {k: None for k in ("pred_masks", "pred_masks_high_res")}
+            for _ in previous_stages_out
+        ]
+    # Categories are indexed by their id in obj_to_cat; use max id + 1
+    cat_to_indices: List[List[int]] = [[] for _ in range(num_categories)]
+    for obj_idx, cat_idx in enumerate(obj_to_cat):
+        cat_to_indices[int(cat_idx)].append(int(obj_idx))
+
+    def _area_weights_from_masks(mask_logits: torch.Tensor) -> torch.Tensor:
+        """Compute per-object weights from mask logits as probability mass area.
+
+        mask_logits: [N, 1, H, W]
+        returns: [N]
+        """
+        probs = torch.sigmoid(mask_logits)  # [N, 1, H, W]
+        areas = probs.sum(dim=(1, 2, 3))  # [N]
+        return areas
+
+    def _grouped_max(
+        tensor: torch.Tensor,  # [N, ...]
+        groups: List[List[int]],
+    ) -> torch.Tensor:
+        """Pixelwise max across objects within the same category."""
+        if tensor.numel() == 0:
+            # Create an empty tensor with category dim if no objects
+            return tensor.new_zeros((len(groups),) + tuple(tensor.shape[1:]))
+        out_per_cat: List[torch.Tensor] = []
+        for idxs in groups:
+            if len(idxs) == 0:
+                out_per_cat.append(tensor.new_zeros(tensor.shape[1:]))
+            else:
+                out_per_cat.append(tensor[idxs].max(dim=0).values)
+        return torch.stack(out_per_cat, dim=0)
+
+    def _grouped_weighted_avg(
+        tensor: torch.Tensor,  # [N, ...]
+        groups: List[List[int]],
+        weights: torch.Tensor,  # [N]
+    ) -> torch.Tensor:
+        """Weighted average across objects within the same category.
+
+        Broadcasting: weights will be broadcast across remaining dims of `tensor`.
+        """
+        if tensor.numel() == 0:
+            return tensor.new_zeros((len(groups),) + tuple(tensor.shape[1:]))
+        # Prepare weights broadcast shape: [N, 1, 1, ...]
+        w = weights.view(weights.shape[0], *([1] * (tensor.dim() - 1)))
+        out_per_cat: List[torch.Tensor] = []
+        for idxs in groups:
+            if len(idxs) == 0:
+                out_per_cat.append(tensor.new_zeros(tensor.shape[1:]))
+                continue
+            sub = tensor[idxs]
+            sub_w = w[idxs]
+            denom = sub_w.sum(dim=0)
+            if torch.all(denom == 0):
+                out_per_cat.append(sub.mean(dim=0))
+            else:
+                out_per_cat.append((sub * sub_w).sum(dim=0) / denom)
+        return torch.stack(out_per_cat, dim=0)
+
+    merged_per_frame: List[Dict[str, Any]] = []
+
+    for frame_out in previous_stages_out:
+        merged: Dict[str, Any] = {}
+
+        # Determine weights from available masks
+        weights_source = None
+        if isinstance(frame_out.get("pred_masks_high_res"), torch.Tensor):
+            weights_source = frame_out["pred_masks_high_res"]  # [N, 1, H, W]
+        elif isinstance(frame_out.get("pred_masks"), torch.Tensor):
+            weights_source = frame_out["pred_masks"]  # [N, 1, H, W]
+
+        weights: torch.Tensor
+        if weights_source is not None:
+            weights = _area_weights_from_masks(weights_source)
+        else:
+            # Fallback to uniform weights
+            device = None
+            if (
+                isinstance(frame_out.get("multistep_pred_ious"), list)
+                and frame_out["multistep_pred_ious"]
+            ):
+                device = frame_out["multistep_pred_ious"][0].device
+            elif (
+                isinstance(frame_out.get("multistep_object_score_logits"), list)
+                and frame_out["multistep_object_score_logits"]
+            ):
+                device = frame_out["multistep_object_score_logits"][0].device
+            else:
+                # Default to CPU float tensor
+                device = torch.device("cpu")
+            weights = torch.ones(len(obj_to_cat), device=device)
+
+        # 1) Merge mask-like keys by pixelwise max (union)
+        for key in (
+            "pred_masks",
+            "pred_masks_high_res",
+            "multistep_pred_masks",
+            "multistep_pred_masks_high_res",
+        ):
+            val = frame_out.get(key)
+            if isinstance(val, torch.Tensor):  # [N, ...]
+                merged[key] = _grouped_max(val, cat_to_indices)
+
+        # 2) Merge multi-mask proposals per step by pixelwise max
+        for key in ("multistep_pred_multimasks", "multistep_pred_multimasks_high_res"):
+            val = frame_out.get(key)
+            if (
+                isinstance(val, list)
+                and len(val) > 0
+                and isinstance(val[0], torch.Tensor)
+            ):
+                step_out: List[torch.Tensor] = []
+                for step_tensor in val:  # [N, K, H, W]
+                    step_out.append(_grouped_max(step_tensor, cat_to_indices))
+                merged[key] = step_out
+
+        # 3) Merge IoUs and scores per step by weighted average
+        for key in ("multistep_pred_ious", "multistep_object_score_logits"):
+            val = frame_out.get(key)
+            if (
+                isinstance(val, list)
+                and len(val) > 0
+                and isinstance(val[0], torch.Tensor)
+            ):
+                step_out: List[torch.Tensor] = []
+                for step_tensor in val:  # [N, K]
+                    step_out.append(
+                        _grouped_weighted_avg(step_tensor, cat_to_indices, weights)
+                    )
+                merged[key] = step_out
+
+        # Preserve point/mask inputs as None (ignore detailed object prompts at category level)
+        merged["point_inputs"] = None
+        merged["mask_inputs"] = None
+        if isinstance(frame_out.get("multistep_point_inputs"), list):
+            merged["multistep_point_inputs"] = [
+                None for _ in frame_out["multistep_point_inputs"]
+            ]
+
+        # Explicitly ignore mask memory related items
+        # (maskmem_features, maskmem_pos_enc) are not included
+
+        merged_per_frame.append(merged)
+
+    return merged_per_frame
 
 
 # Model Parameter Utilities
@@ -362,245 +541,259 @@ def save_model_config(config_dict: Dict[str, Any], path: str) -> None:
         yaml.dump(config_dict, f, default_flow_style=False)
 
 
-# @logger.catch
-# def create_composite_visualization(
-#     image: torch.Tensor,  # [C, H, W]
-#     gt_mask: torch.Tensor,  # [C, H, W]
-#     pred_mask: torch.Tensor,  # [C, H, W]
-#     prompts: List[List[PromptData]],
-#     title: str = "Training Sample",
-#     num_categories: int = 13,
-# ) -> np.ndarray:
-#     """Create composite visualization: Image | GT Mask | Prompts | Prediction."""
-#     import matplotlib.pyplot as plt
-#     import cv2
-#     import random
-#     import colorsys
-
-#     # Generate random colors for different categories
-#     def generate_random_colors(n):
-#         colors = []
-#         for i in range(n):
-#             # Generate vibrant colors using HSV color space
-#             hue = i / n
-#             saturation = 0.8 + random.random() * 0.2  # 0.8-1.0
-#             value = 0.8 + random.random() * 0.2  # 0.8-1.0
-#             r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
-#             colors.append((int(r * 255), int(g * 255), int(b * 255)))
-#         return colors
-
-#     category_colors = generate_random_colors(num_categories)
-
-#     # Flatten nested prompt structure to get all prompts
-#     all_prompts = prompts[0]
-#     # Convert tensors to numpy with proper denormalization
-#     if isinstance(image, torch.Tensor):
-#         image_np = image.permute(1, 2, 0).cpu().detach().numpy()
-#         # Denormalize if using ImageNet normalization
-#         mean = np.array([0.485, 0.456, 0.406])
-#         std = np.array([0.229, 0.224, 0.225])
-#         image_np = image_np * std + mean
-#         image_np = np.clip(image_np, 0, 1)  # Ensure valid range
-#         # Convert to uint8 for display
-#         if image_np.max() <= 1.0:
-#             image_np = (image_np * 255).astype(np.uint8)
-#     else:
-#         image_np = image
-#     # Handle multi-channel masks - process each category separately
-#     if isinstance(gt_mask, torch.Tensor):
-#         if gt_mask.dim() == 3 and gt_mask.shape[0] > 1:
-#             gt_mask_np = gt_mask.cpu().detach().numpy()  # [C, H, W]
-#         else:
-#             gt_mask_np = gt_mask.squeeze().cpu().detach().numpy()
-#     else:
-#         gt_mask_np = gt_mask
-#     if isinstance(pred_mask, torch.Tensor):
-#         if pred_mask.dim() == 3 and pred_mask.shape[0] > 1:
-#             pred_mask_np = pred_mask.cpu().detach().numpy()  # [C, H, W]
-#         else:
-#             pred_mask_np = pred_mask.squeeze().cpu().detach().numpy()
-#     else:
-#         pred_mask_np = pred_mask
-#     # Create 2x2 subplot
-#     fig, axes = plt.subplots(2, 2, figsize=(12, 12))
-#     fig.suptitle(title, fontsize=16)
-#     # 1. Original Image
-#     axes[0, 0].imshow(image_np)
-#     axes[0, 0].set_title("Original Image")
-#     axes[0, 0].axis("off")
-
-#     # Helper function to create alpha composite with contours
-#     def create_alpha_composite_with_contours(base_image, mask_array, colors, alpha=0.4):
-#         # Create a transparent overlay
-#         overlay = np.zeros_like(base_image, dtype=np.uint8)
-
-#         # Apply semi-transparent masks
-#         if mask_array.ndim == 3:  # Multi-category mask
-#             for category_idx in range(mask_array.shape[0]):
-#                 mask = mask_array[category_idx] > 0.5
-#                 if mask.any():
-#                     color = colors[category_idx % len(colors)]
-#                     for c in range(3):
-#                         overlay[:, :, c][mask] = color[c]
-#         else:  # Single category mask
-#             mask = mask_array > 0.5
-#             if mask.any():
-#                 color = colors[0]
-#                 for c in range(3):
-#                     overlay[:, :, c][mask] = color[c]
-
-#         # Create alpha composite
-#         composite = base_image.copy()
-#         # Alpha blending formula: composite = base * (1 - alpha) + overlay * alpha
-#         composite = cv2.addWeighted(base_image, 1 - alpha, overlay, alpha, 0)
-
-#         # Add contours
-#         if mask_array.ndim == 3:  # Multi-category mask
-#             for category_idx in range(mask_array.shape[0]):
-#                 mask = (mask_array[category_idx] > 0.5).astype(np.uint8)
-#                 if mask.any():
-#                     contours, _ = cv2.findContours(
-#                         mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-#                     )
-#                     color = colors[category_idx % len(colors)]
-#                     cv2.drawContours(composite, contours, -1, color, 2)
-#         else:  # Single category mask
-#             mask = (mask_array > 0.5).astype(np.uint8)
-#             if mask.any():
-#                 contours, _ = cv2.findContours(
-#                     mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-#                 )
-#                 color = colors[0]
-#                 cv2.drawContours(composite, contours, -1, color, 2)
-
-#         return composite
-
-#     # 2. Ground Truth Mask with alpha composite and contours
-#     gt_display = create_alpha_composite_with_contours(
-#         image_np, gt_mask_np, category_colors, alpha=0.2
-#     )
-#     axes[0, 1].imshow(gt_display)
-#     axes[0, 1].set_title("GT Mask (Semi-transparent)")
-#     axes[0, 1].axis("off")
-
-#     # 3. Prompts Overlay - visualize all prompts
-#     prompt_img = image_np.copy()
-#     prompt_mask_np = np.zeros_like(gt_mask_np)
-
-#     for prompt_data in all_prompts:
-#         if not hasattr(prompt_data, "obj_id"):
-#             continue
-
-#         # Get category based on obj_id
-#         category_id = prompt_data.obj_id % num_categories
-#         color = category_colors[category_id % len(category_colors)]
-#         prompt_type = prompt_data.prompt_type
-#         if prompt_type == "point" and prompt_data.points is not None:
-#             points = prompt_data.points.cpu().detach().numpy()
-#             labels = (
-#                 prompt_data.labels.cpu().detach().numpy()
-#                 if prompt_data.labels is not None
-#                 else None
-#             )
-#             for idx, point in enumerate(points):
-#                 if labels is not None:
-#                     # Use darker/lighter variants for positive/negative
-#                     point_color = tuple(
-#                         int(c * 0.8) if labels[idx] == 0 else c for c in color
-#                     )
-#                 else:
-#                     point_color = color
-#                 cv2.circle(
-#                     prompt_img, (int(point[0]), int(point[1])), 8, point_color, -1
-#                 )
-#                 # Add white border for better visibility
-#                 cv2.circle(
-#                     prompt_img, (int(point[0]), int(point[1])), 8, (255, 255, 255), 2
-#                 )
-
-#         elif prompt_type == "bbox" and prompt_data.bbox is not None:
-#             bbox = prompt_data.bbox.cpu().detach().numpy()
-#             x1, y1, x2, y2 = map(int, bbox)
-#             cv2.rectangle(prompt_img, (x1, y1), (x2, y2), color, 3)
-
-#         elif prompt_type == "mask" and prompt_data.mask is not None:
-#             mask_prompt = prompt_data.mask.cpu().detach().numpy()
-#             # Create alpha composite for this mask
-#             prompt_mask_np[category_id] = np.maximum(
-#                 prompt_mask_np[category_id], mask_prompt
-#             )
-
-#     if prompt_type == "mask":
-#         prompt_img = create_alpha_composite_with_contours(
-#             image_np, prompt_mask_np, category_colors, alpha=0.2
-#         )
-#     axes[1, 0].imshow(prompt_img)
-#     axes[1, 0].set_title("Prompts (All Objects)")
-#     axes[1, 0].axis("off")
-
-#     # 4. Prediction Overlay with alpha composite and contours
-#     pred_display = create_alpha_composite_with_contours(
-#         image_np, pred_mask_np, category_colors, alpha=0.2
-#     )
-#     axes[1, 1].imshow(pred_display)
-#     axes[1, 1].set_title("Prediction (Semi-transparent)")
-#     axes[1, 1].axis("off")
-
-#     # Convert matplotlib figure to numpy array
-#     fig.canvas.draw()
-#     # Use buffer_rgba() for newer matplotlib versions
-#     buf = fig.canvas.buffer_rgba()
-#     composite = np.asarray(buf)
-#     # Convert from RGBA to RGB by dropping alpha channel
-#     composite = composite[:, :, :3]
-#     plt.close(fig)
-#     return composite
+def extract_shape_info(obj: Any) -> Any:
+    """递归地将张量转换为可序列化的Python类型（列表/标量）"""
+    if isinstance(obj, torch.Tensor):
+        return list(obj.shape)  # 将形状元组转为列表（JSON更友好）
+    elif isinstance(obj, dict):
+        return {k: extract_shape_info(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [extract_shape_info(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(extract_shape_info(item) for item in obj)
+    else:
+        return obj  # 基本类型（int, float, str等）直接返回
 
 
-# @logger.catch
-# def log_training_visualizations(  # type: ignore
-#     logger,
-#     batch_data: Dict,
-#     predictions: torch.Tensor,
-#     batch_idx: int,
-#     stage: str = "train",
-#     max_samples: int = 4,
-#     num_categories: int = 13,
-# ) -> None:
-#     """Log training visualizations to SwanLab."""
-#     if logger is None:
-#         return
-#     frames = batch_data["frames"]
-#     gt_masks = batch_data["gt_masks"]
-#     prompts = batch_data["prompts"]
-#     # Handle batch dimension
+@logger.catch
+def create_composite_visualization(
+    image: torch.Tensor,  # [C, H, W]
+    gt_mask: torch.Tensor,  # [C, H, W]
+    pred_mask: torch.Tensor,  # [C, H, W]
+    prompts: List[List[PromptData]],
+    title: str = "Training Sample",
+    num_categories: int = 13,
+) -> np.ndarray:
+    """Create composite visualization: Image | GT Mask | Prompts | Prediction."""
+    import matplotlib.pyplot as plt
+    import cv2
+    import random
+    import colorsys
 
-#     if frames.dim() == 5:
-#         frames = frames[0]  # [T, C, H, W]
-#         gt_masks = gt_masks[0]  # [T, num_categories, H, W] or [T, H, W]
-#         if isinstance(prompts, list):
-#             prompts = prompts[0]
+    # Generate random colors for different categories
+    def generate_random_colors(n):
+        colors = []
+        for i in range(n):
+            # Generate vibrant colors using HSV color space
+            hue = i / n
+            saturation = 0.8 + random.random() * 0.2  # 0.8-1.0
+            value = 0.8 + random.random() * 0.2  # 0.8-1.0
+            r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
+            colors.append((int(r * 255), int(g * 255), int(b * 255)))
+        return colors
 
-#     # Log first few frames
-#     num_samples = min(max_samples, frames.shape[0], predictions.shape[0])
-#     for i in range(num_samples):
-#         frame = frames[i]  # [C, H, W]
-#         gt_mask = (
-#             gt_masks[i] if gt_masks.dim() > 2 else gt_masks
-#         )  # Handle different mask shapes
-#         pred_mask = predictions[i] if predictions.dim() > 2 else predictions
-#         # Create composite visualization
-#         composite = create_composite_visualization(
-#             frame,
-#             gt_mask,
-#             pred_mask,
-#             prompts,
-#             title=f"{stage.capitalize()} - Batch {batch_idx}, Frame {i}",
-#             num_categories=num_categories,
-#         )
-#         # Log to SwanLab
-#         logger.log_image(
-#             key=f"{stage}_visualization/batch_{batch_idx}_frame_{i}",
-#             images=[composite],
-#             step=logger.global_step if hasattr(logger, "global_step") else None,
-#         )
+    category_colors = generate_random_colors(num_categories)
+
+    # Flatten nested prompt structure to get all prompts
+    all_prompts = prompts[0]
+    # Convert tensors to numpy with proper denormalization
+    if isinstance(image, torch.Tensor):
+        image_np = image.permute(1, 2, 0).cpu().detach().numpy()
+        # Denormalize if using ImageNet normalization
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        image_np = image_np * std + mean
+        image_np = np.clip(image_np, 0, 1)  # Ensure valid range
+        # Convert to uint8 for display
+        if image_np.max() <= 1.0:
+            image_np = (image_np * 255).astype(np.uint8)
+    else:
+        image_np = image
+    # Handle multi-channel masks - process each category separately
+    if isinstance(gt_mask, torch.Tensor):
+        if gt_mask.dim() == 3 and gt_mask.shape[0] > 1:
+            gt_mask_np = gt_mask.cpu().detach().numpy()  # [C, H, W]
+        else:
+            gt_mask_np = gt_mask.squeeze().cpu().detach().numpy()
+    else:
+        gt_mask_np = gt_mask
+    if isinstance(pred_mask, torch.Tensor):
+        if pred_mask.dim() == 3 and pred_mask.shape[0] > 1:
+            pred_mask_np = pred_mask.cpu().detach().numpy()  # [C, H, W]
+        else:
+            pred_mask_np = pred_mask.squeeze().cpu().detach().numpy()
+    else:
+        pred_mask_np = pred_mask
+    # Create 2x2 subplot
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    fig.suptitle(title, fontsize=16)
+    # 1. Original Image
+    axes[0, 0].imshow(image_np)
+    axes[0, 0].set_title("Original Image")
+    axes[0, 0].axis("off")
+
+    # Helper function to create alpha composite with contours
+    def create_alpha_composite_with_contours(base_image, mask_array, colors, alpha=0.4):
+        # Create a transparent overlay
+        overlay = np.zeros_like(base_image, dtype=np.uint8)
+
+        # Apply semi-transparent masks
+        if mask_array.ndim == 3:  # Multi-category mask
+            for category_idx in range(mask_array.shape[0]):
+                mask = mask_array[category_idx] > 0.5
+                if mask.any():
+                    color = colors[category_idx % len(colors)]
+                    for c in range(3):
+                        overlay[:, :, c][mask] = color[c]
+        else:  # Single category mask
+            mask = mask_array > 0.5
+            if mask.any():
+                color = colors[0]
+                for c in range(3):
+                    overlay[:, :, c][mask] = color[c]
+
+        # Create alpha composite
+        composite = base_image.copy()
+        # Alpha blending formula: composite = base * (1 - alpha) + overlay * alpha
+        composite = cv2.addWeighted(base_image, 1 - alpha, overlay, alpha, 0)
+
+        # Add contours
+        if mask_array.ndim == 3:  # Multi-category mask
+            for category_idx in range(mask_array.shape[0]):
+                mask = (mask_array[category_idx] > 0.5).astype(np.uint8)
+                if mask.any():
+                    contours, _ = cv2.findContours(
+                        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    color = colors[category_idx % len(colors)]
+                    cv2.drawContours(composite, contours, -1, color, 2)
+        else:  # Single category mask
+            mask = (mask_array > 0.5).astype(np.uint8)
+            if mask.any():
+                contours, _ = cv2.findContours(
+                    mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                color = colors[0]
+                cv2.drawContours(composite, contours, -1, color, 2)
+
+        return composite
+
+    # 2. Ground Truth Mask with alpha composite and contours
+    gt_display = create_alpha_composite_with_contours(
+        image_np, gt_mask_np, category_colors, alpha=0.2
+    )
+    axes[0, 1].imshow(gt_display)
+    axes[0, 1].set_title("GT Mask (Semi-transparent)")
+    axes[0, 1].axis("off")
+
+    # 3. Prompts Overlay - visualize all prompts
+    prompt_img = image_np.copy()
+    prompt_mask_np = np.zeros_like(gt_mask_np)
+
+    for prompt_data in all_prompts:
+        if not hasattr(prompt_data, "obj_id"):
+            continue
+
+        # Get category based on obj_id
+        category_id = prompt_data.obj_id % num_categories
+        color = category_colors[category_id % len(category_colors)]
+        prompt_type = prompt_data.prompt_type
+        if prompt_type == "point" and prompt_data.points is not None:
+            points = prompt_data.points.cpu().detach().numpy()
+            labels = (
+                prompt_data.labels.cpu().detach().numpy()
+                if prompt_data.labels is not None
+                else None
+            )
+            for idx, point in enumerate(points):
+                if labels is not None:
+                    # Use darker/lighter variants for positive/negative
+                    point_color = tuple(
+                        int(c * 0.8) if labels[idx] == 0 else c for c in color
+                    )
+                else:
+                    point_color = color
+                cv2.circle(
+                    prompt_img, (int(point[0]), int(point[1])), 8, point_color, -1
+                )
+                # Add white border for better visibility
+                cv2.circle(
+                    prompt_img, (int(point[0]), int(point[1])), 8, (255, 255, 255), 2
+                )
+
+        elif prompt_type == "bbox" and prompt_data.bbox is not None:
+            bbox = prompt_data.bbox.cpu().detach().numpy()
+            x1, y1, x2, y2 = map(int, bbox)
+            cv2.rectangle(prompt_img, (x1, y1), (x2, y2), color, 3)
+
+        elif prompt_type == "mask" and prompt_data.mask is not None:
+            mask_prompt = prompt_data.mask.cpu().detach().numpy()
+            # Create alpha composite for this mask
+            prompt_mask_np[category_id] = np.maximum(
+                prompt_mask_np[category_id], mask_prompt
+            )
+
+    if prompt_type == "mask":
+        prompt_img = create_alpha_composite_with_contours(
+            image_np, prompt_mask_np, category_colors, alpha=0.2
+        )
+    axes[1, 0].imshow(prompt_img)
+    axes[1, 0].set_title("Prompts (All Objects)")
+    axes[1, 0].axis("off")
+
+    # 4. Prediction Overlay with alpha composite and contours
+    pred_display = create_alpha_composite_with_contours(
+        image_np, pred_mask_np, category_colors, alpha=0.2
+    )
+    axes[1, 1].imshow(pred_display)
+    axes[1, 1].set_title("Prediction (Semi-transparent)")
+    axes[1, 1].axis("off")
+
+    # Convert matplotlib figure to numpy array
+    fig.canvas.draw()
+    # Use buffer_rgba() for newer matplotlib versions
+    buf = fig.canvas.buffer_rgba()
+    composite = np.asarray(buf)
+    # Convert from RGBA to RGB by dropping alpha channel
+    composite = composite[:, :, :3]
+    plt.close(fig)
+    return composite
+
+
+@logger.catch
+def log_training_visualizations(  # type: ignore
+    logger,
+    batch_data: Dict,
+    predictions: torch.Tensor,
+    batch_idx: int,
+    stage: str = "train",
+    max_samples: int = 4,
+    num_categories: int = 13,
+) -> None:
+    """Log training visualizations to SwanLab."""
+    if logger is None:
+        return
+    frames = batch_data["frames"]
+    gt_masks = batch_data["gt_masks"]
+    prompts = batch_data["prompts"]
+    # Handle batch dimension
+
+    if frames.dim() == 5:
+        frames = frames[0]  # [T, C, H, W]
+        gt_masks = gt_masks[0]  # [T, num_categories, H, W] or [T, H, W]
+        if isinstance(prompts, list):
+            prompts = prompts[0]
+
+    # Log first few frames
+    num_samples = min(max_samples, frames.shape[0], predictions.shape[0])
+    for i in range(num_samples):
+        frame = frames[i]  # [C, H, W]
+        gt_mask = (
+            gt_masks[i] if gt_masks.dim() > 2 else gt_masks
+        )  # Handle different mask shapes
+        pred_mask = predictions[i] if predictions.dim() > 2 else predictions
+        # Create composite visualization
+        composite = create_composite_visualization(
+            frame,
+            gt_mask,
+            pred_mask,
+            prompts,
+            title=f"{stage.capitalize()} - Batch {batch_idx}, Frame {i}",
+            num_categories=num_categories,
+        )
+        # Log to SwanLab
+        logger.log_image(
+            key=f"{stage}_visualization/batch_{batch_idx}_frame_{i}",
+            images=[composite],
+            step=logger.global_step if hasattr(logger, "global_step") else None,
+        )

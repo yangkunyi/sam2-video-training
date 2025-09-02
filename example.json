@@ -1,0 +1,633 @@
+{
+    "previous_stages_out": [
+        {
+            "point_inputs": {
+                "point_coords": [
+                    23,
+                    3,
+                    2
+                ],
+                "point_labels": [
+                    23,
+                    3
+                ]
+            },
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    1,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    1,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "multistep_point_inputs": [
+                {
+                    "point_coords": [
+                        23,
+                        3,
+                        2
+                    ],
+                    "point_labels": [
+                        23,
+                        3
+                    ]
+                }
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        },
+        {
+            "point_inputs": null,
+            "mask_inputs": null,
+            "multistep_pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "multistep_pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "multistep_pred_multimasks": [
+                [
+                    23,
+                    3,
+                    128,
+                    128
+                ]
+            ],
+            "multistep_pred_multimasks_high_res": [
+                [
+                    23,
+                    3,
+                    512,
+                    512
+                ]
+            ],
+            "multistep_pred_ious": [
+                [
+                    23,
+                    3
+                ]
+            ],
+            "multistep_point_inputs": [
+                null
+            ],
+            "multistep_object_score_logits": [
+                [
+                    23,
+                    1
+                ]
+            ],
+            "pred_masks": [
+                23,
+                1,
+                128,
+                128
+            ],
+            "pred_masks_high_res": [
+                23,
+                1,
+                512,
+                512
+            ],
+            "maskmem_features": [
+                23,
+                64,
+                32,
+                32
+            ],
+            "maskmem_pos_enc": [
+                [
+                    23,
+                    64,
+                    32,
+                    32
+                ]
+            ]
+        }
+    ],
+    "obj_to_cat": [
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        3,
+        4,
+        4,
+        4,
+        5,
+        5,
+        6,
+        9,
+        10,
+        11
+    ]
+}

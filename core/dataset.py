@@ -402,8 +402,8 @@ def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDa
     masks = masks.flatten(1, 2)  # [T, B*N, H, W]
 
     metadata = BatchedVideoMetaData(
-        unique_objects_identifier=objects_identifier.reshape(-1, 3),
-        frame_orig_size=frame_orig_size.reshape(-1, 2),
+        unique_objects_identifier=objects_identifier,
+        frame_orig_size=frame_orig_size,
     )
 
     return BatchedVideoDatapoint(
@@ -412,4 +412,5 @@ def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDa
         masks=masks.bool(),
         metadata=metadata,
         dict_key="video_batch",
+        batch_size=[T],
     )

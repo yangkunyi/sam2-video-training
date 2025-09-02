@@ -12,6 +12,7 @@ defaults:
 seed: 42
 use_wandb: true
 wandb_project: sam2-video-training
+output_dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 # Logging
 log_level: INFO
