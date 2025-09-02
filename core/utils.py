@@ -768,7 +768,7 @@ def create_composite_visualization(
 
     if prompts["prompt_type"] == "mask":
         prompt_img = create_alpha_composite_with_contours(
-            image_np, prompt_mask_np, category_colors, alpha=0.2
+            frame_0_np, prompt_mask_np, category_colors, alpha=0.2
         )
     axes[1, 0].imshow(prompt_img)
     axes[1, 0].set_title("Prompts (All Objects)")
@@ -871,5 +871,3 @@ def create_visualization_gif(
         return gif_filename
 
     return ""
-
-

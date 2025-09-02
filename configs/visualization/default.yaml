@@ -1,0 +1,7 @@
+# Conservative defaults to minimize training overhead
+enabled: true
+train_every_n_steps: 500  # Disabled by default
+val_first_batch_every_n_epochs: 1
+max_length: 4
+stride: 1
+caption: "cholecseg8k"

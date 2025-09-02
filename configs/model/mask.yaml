@@ -1,0 +1,4 @@
+defaults:
+  - sam2
+
+prompt_type: mask

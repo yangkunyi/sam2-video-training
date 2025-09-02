@@ -124,6 +124,18 @@ class TrainerConfig:
 
 
 @dataclass
+class VisualizationConfig:
+    """Configuration for GIF visualization and SwanLab logging."""
+
+    enabled: bool = True
+    train_every_n_steps: int = 0  # 0 disables train GIFs
+    val_first_batch_every_n_epochs: int = 1  # log only first batch per epoch
+    max_length: int = 4
+    stride: int = 1
+    caption: str = "cholecseg8k"
+
+
+@dataclass
 class Config:
     """Root configuration containing all settings."""
 
@@ -134,6 +146,7 @@ class Config:
     scheduler: SchedulerConfig
     trainer: TrainerConfig
     swanlab: SwanLabConfig
+    visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
 
     # Global settings
     seed: int = 42

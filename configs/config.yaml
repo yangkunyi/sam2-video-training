@@ -6,6 +6,7 @@ defaults:
   - scheduler: cosine
   - trainer: default
   - swanlab: default
+  - visualization: default
   - _self_
 
 # Global settings

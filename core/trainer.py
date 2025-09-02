@@ -18,7 +18,6 @@ from core.sam2model import SAM2Model
 from core.dataset import sam2_collate_fn
 from core.loss_fns import MultiStepMultiMasksAndIous, CORE_LOSS_KEY
 from core.config import Config
-from core.utils import log_training_visualizations
 
 
 # Import SAM2 data utilities for format conversion
@@ -179,6 +178,11 @@ class SAM2LightningModule(L.LightningModule):
             lr = self.optimizers().param_groups[0]["lr"]
             self.log("train/learning_rate", lr, prog_bar=True, logger=True)
 
+        # GIF logging for training
+        if self._should_log_gif("train", batch_idx):
+            frames = batch.img_batch.squeeze(1)  # [T, C, H, W]
+            self._log_gif(frames, batch.masks, outs_per_frame, obj_to_cat, "train")
+
         return total_loss
 
     def validation_step(
@@ -186,7 +190,7 @@ class SAM2LightningModule(L.LightningModule):
     ) -> torch.Tensor:
         """Validation step with BatchedVideoDatapoint input."""
         # Forward pass - batch is already in BatchedVideoDatapoint format
-        outs_per_frame = self.forward(batch)
+        outs_per_frame, obj_to_cat = self.forward(batch)
 
         # Ground truth masks [T, N, H, W]
         target_masks = batch.masks
@@ -198,7 +202,51 @@ class SAM2LightningModule(L.LightningModule):
         # Store for epoch end
         (self.val_step_outputs.append({f"val/{k}": v for k, v in losses.items()}),)
 
+        # GIF logging for validation
+        if self._should_log_gif("val", batch_idx):
+            frames = batch.img_batch.squeeze(1)  # [T, C, H, W]
+            self._log_gif(frames, batch.masks, outs_per_frame, obj_to_cat, "val")
+
         return total_loss
+
+    def _should_log_gif(self, split: str, batch_idx: int) -> bool:
+        """Check if GIF should be logged for current step/epoch."""
+        if not self.config.visualization.enabled or not self.trainer.is_global_zero:
+            return False
+        
+        if split == "train":
+            steps = self.config.visualization.train_every_n_steps
+            return steps > 0 and self.global_step % steps == 0
+        elif split == "val":
+            epochs = self.config.visualization.val_first_batch_every_n_epochs
+            return batch_idx == 0 and self.current_epoch % epochs == 0
+        
+        return False
+
+    def _log_gif(self, frames: torch.Tensor, gt_masks: torch.Tensor, 
+                 outs_per_frame: List[Dict], obj_to_cat: List[int], split: str) -> None:
+        """Create and log GIF visualization."""
+        try:
+            from core.utils import create_visualization_gif
+            import swanlab
+            
+            gif_path = create_visualization_gif(
+                frames=frames,
+                gt_masks=gt_masks,
+                outs_per_frame=outs_per_frame,
+                obj_to_cat=obj_to_cat,
+                max_length=self.config.visualization.max_length,
+                stride=self.config.visualization.stride,
+            )
+            
+            if gif_path:
+                caption = f"{self.config.visualization.caption} | {split} e{self.current_epoch} s{self.global_step}"
+                self.logger.experiment.log({
+                    "video": swanlab.Video(gif_path, caption=caption)
+                })
+                logger.info(f"Logged {split} GIF: {gif_path}")
+        except Exception as e:
+            logger.warning(f"Failed to log {split} GIF: {e}")
 
     def on_validation_epoch_end(self):
         """Validation epoch end."""
