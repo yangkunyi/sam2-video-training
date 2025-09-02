@@ -19,6 +19,10 @@ from scipy import ndimage
 from typing import Dict, Tuple, List, Any
 from torch import nn
 from loguru import logger
+from dataclasses import dataclass
+from torch import Tensor
+from typing import List, Dict, Optional
+import imageio
 
 
 def generate_point_prompt(
@@ -383,9 +387,8 @@ def merge_object_results_to_category(
                     )
                 merged[key] = step_out
 
-        # Preserve point/mask inputs as None (ignore detailed object prompts at category level)
-        merged["point_inputs"] = None
-        merged["mask_inputs"] = None
+        merged["point_inputs"] = frame_out["point_inputs"]
+        merged["mask_inputs"] = frame_out["mask_inputs"]
         if isinstance(frame_out.get("multistep_point_inputs"), list):
             merged["multistep_point_inputs"] = [
                 None for _ in frame_out["multistep_point_inputs"]
@@ -557,12 +560,14 @@ def extract_shape_info(obj: Any) -> Any:
 
 @logger.catch
 def create_composite_visualization(
+    frame_0: torch.Tensor,  # [C, H, W]
     image: torch.Tensor,  # [C, H, W]
     gt_mask: torch.Tensor,  # [C, H, W]
     pred_mask: torch.Tensor,  # [C, H, W]
-    prompts: List[List[PromptData]],
-    title: str = "Training Sample",
+    prompts: Dict[str, Any],
+    obj_to_cat: List[int],
     num_categories: int = 13,
+    title: str = "Visualization",
 ) -> np.ndarray:
     """Create composite visualization: Image | GT Mask | Prompts | Prediction."""
     import matplotlib.pyplot as plt
@@ -584,8 +589,6 @@ def create_composite_visualization(
 
     category_colors = generate_random_colors(num_categories)
 
-    # Flatten nested prompt structure to get all prompts
-    all_prompts = prompts[0]
     # Convert tensors to numpy with proper denormalization
     if isinstance(image, torch.Tensor):
         image_np = image.permute(1, 2, 0).cpu().detach().numpy()
@@ -599,6 +602,20 @@ def create_composite_visualization(
             image_np = (image_np * 255).astype(np.uint8)
     else:
         image_np = image
+
+    if isinstance(frame_0, torch.Tensor):
+        frame_0_np = frame_0.permute(1, 2, 0).cpu().detach().numpy()
+        # Denormalize if using ImageNet normalization
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        frame_0_np = frame_0_np * std + mean
+        frame_0_np = np.clip(frame_0_np, 0, 1)  # Ensure valid range
+        # Convert to uint8 for display
+        if frame_0_np.max() <= 1.0:
+            frame_0_np = (frame_0_np * 255).astype(np.uint8)
+    else:
+        frame_0_np = frame_0
+
     # Handle multi-channel masks - process each category separately
     if isinstance(gt_mask, torch.Tensor):
         if gt_mask.dim() == 3 and gt_mask.shape[0] > 1:
@@ -607,6 +624,7 @@ def create_composite_visualization(
             gt_mask_np = gt_mask.squeeze().cpu().detach().numpy()
     else:
         gt_mask_np = gt_mask
+
     if isinstance(pred_mask, torch.Tensor):
         if pred_mask.dim() == 3 and pred_mask.shape[0] > 1:
             pred_mask_np = pred_mask.cpu().detach().numpy()  # [C, H, W]
@@ -614,9 +632,11 @@ def create_composite_visualization(
             pred_mask_np = pred_mask.squeeze().cpu().detach().numpy()
     else:
         pred_mask_np = pred_mask
+
     # Create 2x2 subplot
     fig, axes = plt.subplots(2, 2, figsize=(12, 12))
     fig.suptitle(title, fontsize=16)
+
     # 1. Original Image
     axes[0, 0].imshow(image_np)
     axes[0, 0].set_title("Original Image")
@@ -677,53 +697,76 @@ def create_composite_visualization(
     axes[0, 1].axis("off")
 
     # 3. Prompts Overlay - visualize all prompts
-    prompt_img = image_np.copy()
+    prompt_img = frame_0_np.copy()
     prompt_mask_np = np.zeros_like(gt_mask_np)
 
-    for prompt_data in all_prompts:
-        if not hasattr(prompt_data, "obj_id"):
-            continue
-
-        # Get category based on obj_id
-        category_id = prompt_data.obj_id % num_categories
-        color = category_colors[category_id % len(category_colors)]
-        prompt_type = prompt_data.prompt_type
-        if prompt_type == "point" and prompt_data.points is not None:
-            points = prompt_data.points.cpu().detach().numpy()
-            labels = (
-                prompt_data.labels.cpu().detach().numpy()
-                if prompt_data.labels is not None
-                else None
-            )
+    if prompts["prompt_type"] == "point":
+        for i in range(prompts["point_inputs"]["point_coords"].shape[0]):
+            color = category_colors[obj_to_cat[i]]
+            points = prompts["point_inputs"]["point_coords"][i].cpu().detach().numpy()
+            labels = prompts["point_inputs"]["point_labels"][i].cpu().detach().numpy()
             for idx, point in enumerate(points):
-                if labels is not None:
-                    # Use darker/lighter variants for positive/negative
-                    point_color = tuple(
-                        int(c * 0.8) if labels[idx] == 0 else c for c in color
+                label = labels[idx]
+                if label == 1:  # 画点 (圆形标记)
+                    cv2.circle(
+                        prompt_img,
+                        (int(point[0]), int(point[1])),
+                        8,
+                        color,
+                        -1,
                     )
-                else:
-                    point_color = color
-                cv2.circle(
-                    prompt_img, (int(point[0]), int(point[1])), 8, point_color, -1
-                )
-                # Add white border for better visibility
-                cv2.circle(
-                    prompt_img, (int(point[0]), int(point[1])), 8, (255, 255, 255), 2
-                )
+                    # 添加白色边框
+                    cv2.circle(
+                        prompt_img,
+                        (int(point[0]), int(point[1])),
+                        8,
+                        (255, 255, 255),
+                        2,
+                    )
+                elif label == 0:  # 画叉 (十字标记)
+                    cv2.drawMarker(
+                        prompt_img,
+                        (int(point[0]), int(point[1])),
+                        color,
+                        markerType=cv2.MARKER_CROSS,
+                        markerSize=16,
+                        thickness=3,
+                        line_type=cv2.LINE_AA,
+                    )
+    elif prompts["prompt_type"] == "bbox":
+        for i in range(prompts["point_inputs"]["point_labels"].shape[0]):
+            color = category_colors[obj_to_cat[i]]
+            x1, y1, x2, y2 = 0, 0, 0, 0
 
-        elif prompt_type == "bbox" and prompt_data.bbox is not None:
-            bbox = prompt_data.bbox.cpu().detach().numpy()
-            x1, y1, x2, y2 = map(int, bbox)
-            cv2.rectangle(prompt_img, (x1, y1), (x2, y2), color, 3)
+            color = category_colors[obj_to_cat[i]]
+            points = prompts["point_inputs"]["point_coords"][i].cpu().detach().numpy()
+            labels = prompts["point_inputs"]["point_labels"][i].cpu().detach().numpy()
+            for idx, point in enumerate(points):
+                label = labels[idx]
+                if label == 2:  # 画矩形 (矩形标记)
+                    x1, y1 = point[0], point[1]
+                if label == 3:
+                    x2, y2 = point[0], point[1]
 
-        elif prompt_type == "mask" and prompt_data.mask is not None:
-            mask_prompt = prompt_data.mask.cpu().detach().numpy()
-            # Create alpha composite for this mask
-            prompt_mask_np[category_id] = np.maximum(
-                prompt_mask_np[category_id], mask_prompt
+            # 画矩形
+            cv2.rectangle(
+                prompt_img,
+                (int(x1), int(y1)),
+                (int(x2), int(y2)),
+                color,
+                thickness=2,
             )
 
-    if prompt_type == "mask":
+    elif prompts["prompt_type"] == "mask":
+        for i in range(prompts["mask_inputs"].shape[0]):
+            color = category_colors[obj_to_cat[i]]
+            mask_prompt = prompts["mask_inputs"][i].cpu().detach().numpy()
+            # Create alpha composite for this mask
+            prompt_mask_np[obj_to_cat[i]] = np.maximum(
+                prompt_mask_np[obj_to_cat[i]], mask_prompt
+            )
+
+    if prompts["prompt_type"] == "mask":
         prompt_img = create_alpha_composite_with_contours(
             image_np, prompt_mask_np, category_colors, alpha=0.2
         )
@@ -751,49 +794,82 @@ def create_composite_visualization(
 
 
 @logger.catch
-def log_training_visualizations(  # type: ignore
-    logger,
-    batch_data: Dict,
-    predictions: torch.Tensor,
-    batch_idx: int,
-    stage: str = "train",
-    max_samples: int = 4,
-    num_categories: int = 13,
-) -> None:
-    """Log training visualizations to SwanLab."""
-    if logger is None:
-        return
-    frames = batch_data["frames"]
-    gt_masks = batch_data["gt_masks"]
-    prompts = batch_data["prompts"]
-    # Handle batch dimension
+def create_visualization_gif(
+    frames: torch.Tensor,
+    gt_masks: torch.Tensor,
+    outs_per_frame: List[Dict[str, torch.Tensor]],
+    obj_to_cat: List[int],
+    max_length: int = 4,
+    stride: int = 1,
+) -> str:
+    """Create visualization GIF and return path to GIF file in /tmp."""
 
-    if frames.dim() == 5:
-        frames = frames[0]  # [T, C, H, W]
-        gt_masks = gt_masks[0]  # [T, num_categories, H, W] or [T, H, W]
-        if isinstance(prompts, list):
-            prompts = prompts[0]
+    # Create list to store frames for GIF
+    gif_frames = []
 
-    # Log first few frames
-    num_samples = min(max_samples, frames.shape[0], predictions.shape[0])
-    for i in range(num_samples):
+    # [T, C, H, W]
+    predictions = torch.stack(
+        [out["multistep_pred_multimasks_high_res"][0] for out in outs_per_frame]
+    ).squeeze(2)
+    num_categories = predictions.shape[1]
+    point_prompts = outs_per_frame[0]["point_inputs"]
+    mask_prompts = outs_per_frame[0]["mask_inputs"]
+
+    if point_prompts is not None:
+        unique_values = point_prompts["point_labels"].unique()
+        if 2 in unique_values or 3 in unique_values:
+            prompt_type = "bbox"
+        else:
+            prompt_type = "point"
+    else:
+        prompt_type = "mask"
+
+    # Process frames with stride
+    length = min(max_length, frames.shape[0], predictions.shape[0])
+    indices = range(0, length, stride)
+
+    prompts = {
+        "point_inputs": point_prompts if point_prompts is not None else None,
+        "mask_inputs": mask_prompts if mask_prompts is not None else None,
+        "prompt_type": prompt_type,
+    }
+
+    for i in indices:
         frame = frames[i]  # [C, H, W]
-        gt_mask = (
-            gt_masks[i] if gt_masks.dim() > 2 else gt_masks
-        )  # Handle different mask shapes
-        pred_mask = predictions[i] if predictions.dim() > 2 else predictions
+        gt_mask = gt_masks[i]
+        pred_mask = predictions[i]
+
         # Create composite visualization
         composite = create_composite_visualization(
-            frame,
-            gt_mask,
-            pred_mask,
-            prompts,
-            title=f"{stage.capitalize()} - Batch {batch_idx}, Frame {i}",
+            frame_0=frames[0],
+            image=frame,
+            gt_mask=gt_mask,
+            pred_mask=pred_mask,
+            prompts=prompts,
+            title=f"Frame {i}",
+            obj_to_cat=obj_to_cat,
             num_categories=num_categories,
         )
-        # Log to SwanLab
-        logger.log_image(
-            key=f"{stage}_visualization/batch_{batch_idx}_frame_{i}",
-            images=[composite],
-            step=logger.global_step if hasattr(logger, "global_step") else None,
+
+        # Add frame to GIF list
+        gif_frames.append(composite)
+
+    # Create GIF from frames
+    if gif_frames:
+        # Create temporary file in /tmp directory
+        import tempfile
+
+        gif_filename = tempfile.mktemp(
+            suffix=".gif", prefix="visualization_", dir="/tmp"
         )
+
+        # Save as GIF
+        with imageio.get_writer(gif_filename, mode="I", duration=0.5, loop=0) as writer:
+            for frame in gif_frames:
+                writer.append_data(frame)
+
+        return gif_filename
+
+    return ""
+
+

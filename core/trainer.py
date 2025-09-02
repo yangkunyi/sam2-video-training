@@ -18,6 +18,7 @@ from core.sam2model import SAM2Model
 from core.dataset import sam2_collate_fn
 from core.loss_fns import MultiStepMultiMasksAndIous, CORE_LOSS_KEY
 from core.config import Config
+from core.utils import log_training_visualizations
 
 
 # Import SAM2 data utilities for format conversion
@@ -156,15 +157,16 @@ class SAM2LightningModule(L.LightningModule):
     ) -> torch.Tensor:
         """Training step with BatchedVideoDatapoint input."""
         # Forward pass - batch is already in BatchedVideoDatapoint format
-        outs_per_frame = self.forward(batch)
+        outs_per_frame, obj_to_cat = self.forward(batch)
+        
 
-        # Ground truth masks [T, N, H, W]
-        target_masks = batch.masks
+        target_masks = batch.masks # Ground truth masks [T, N, H, W]
+        images = batch.img_batch.squeeze(1)  # [T, C, H, W]
+        
 
         # Compute multi-step loss across frames
         losses = self.criterion(outs_per_frame, target_masks)
         total_loss = losses[CORE_LOSS_KEY]
-
         # Log metrics
         self.log("train/total_loss", total_loss, prog_bar=True, logger=True)
         self.log("train/loss_mask", losses["loss_mask"], logger=True)
@@ -192,11 +194,9 @@ class SAM2LightningModule(L.LightningModule):
         # Compute multi-step loss across frames
         losses = self.criterion(outs_per_frame, target_masks)
         total_loss = losses[CORE_LOSS_KEY]
-        
 
         # Store for epoch end
-        self.val_step_outputs.append({f"val/{k}": v for k, v in losses.items()}),
-
+        (self.val_step_outputs.append({f"val/{k}": v for k, v in losses.items()}),)
 
         return total_loss
 
@@ -328,3 +328,6 @@ class SAM2LightningDataModule(L.LightningDataModule):
             pin_memory=True,
             collate_fn=sam2_collate_fn,
         )
+
+
+

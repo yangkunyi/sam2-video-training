@@ -119,7 +119,9 @@ class SAM2Model(SAM2Base):
         """
         return self
 
-    def forward(self, input: BatchedVideoDatapoint) -> List[Dict[str, torch.Tensor]]:
+    def forward(
+        self, input: BatchedVideoDatapoint
+    ) -> Tuple[List[Dict[str, torch.Tensor]], List[int]]:
         """Forward pass through simplified SAM2 training.
 
         Returns a list of per-frame dictionaries aggregated at category level,
@@ -142,7 +144,7 @@ class SAM2Model(SAM2Base):
             backbone_out["num_categories"],
         )
 
-        return out
+        return out, backbone_out["obj_to_cat"]
 
     def prepare_prompt_inputs(self, backbone_out, input, start_frame_idx=0):
         """
