@@ -1,5 +1,4 @@
-# Configuration for COCO dataset
-coco_json_path: ""
+# Configuration for COCO dataset (provide paths via Hydra overrides for your setup)
 train_path: /bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_train.json
 val_path: /bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_test.json
 image_size: 512

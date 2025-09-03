@@ -19,7 +19,7 @@ from loguru import logger
 import sys
 # icecream import removed
 
-# Try to import pycocotools for RLE decoding, with fallback
+# Import pycocotools for RLE decoding (required)
 from pycocotools import mask as mask_utils
 
 # SAM2 data structures for collate function
@@ -30,12 +30,13 @@ from core.config import DataConfig
 
 
 class COCOImageDataset(Dataset):
-    """COCO format dataset for single image loading."""
+    """Minimal COCO-format dataset that returns a single image and its per-category mask tensor."""
 
     @logger.catch(onerror=lambda _: sys.exit(1))
     def __init__(
         self,
         config: "DataConfig",
+        json_path: Optional[str] = None,
     ):
         """
         Initialize COCO image dataset.
@@ -44,9 +45,9 @@ class COCOImageDataset(Dataset):
             config: DataConfig containing dataset configuration
         """
         self.config = config
-        # Check if coco_json_path is set directly on config, otherwise use train_path
-        json_path = config.coco_json_path
-        self.coco_json_path = Path(json_path)
+        # Resolve annotation path (explicit override wins; otherwise use train_path)
+        # Fail-fast: explicit path required; if not provided use config.train_path directly
+        self.coco_json_path = Path(json_path or config.train_path)
         self.image_size = config.image_size
 
         # Validate input
@@ -57,14 +58,22 @@ class COCOImageDataset(Dataset):
         with open(self.coco_json_path, "r") as f:
             coco_data = json.load(f)
 
-        self.images = coco_data.get("images", [])
-        self.annotations = coco_data.get("annotations", [])
-        self.categories = coco_data.get("categories", [])
+        self.images: List[Dict[str, Any]] = coco_data.get("images", [])
+        self.annotations: List[Dict[str, Any]] = coco_data.get("annotations", [])
+        self.categories: List[Dict[str, Any]] = coco_data.get("categories", [])
 
-        if config.num_categories is None:
-            self.num_categories = len(self.categories)
-        else:
-            self.num_categories = config.num_categories
+        # Build category-id -> contiguous index mapping (fail-fast if missing)
+        if not self.categories:
+            raise ValueError(
+                "COCO JSON must include non-empty 'categories' list for fail-fast semantics"
+            )
+        sorted_cats = sorted(self.categories, key=lambda c: c.get("id", 0))
+        self.catid_to_idx = {c["id"]: i for i, c in enumerate(sorted_cats)}
+        inferred_num_cats = len(sorted_cats)
+
+        self.num_categories = (
+            config.num_categories if config.num_categories is not None else inferred_num_cats
+        )
         # Create image ID to annotations mapping
         self.image_id_to_annotations = {}
         for ann in self.annotations:
@@ -73,7 +82,7 @@ class COCOImageDataset(Dataset):
                 self.image_id_to_annotations[image_id] = []
             self.image_id_to_annotations[image_id].append(ann)
 
-        # Group images by video for metadata
+        # Group images by video for clip generation and sort by frame order
         self.video_to_images = {}
         for img in self.images:
             video_id = img.get("video_id", 0)
@@ -81,11 +90,13 @@ class COCOImageDataset(Dataset):
                 self.video_to_images[video_id] = []
             self.video_to_images[video_id].append(img)
 
-        # Sort by frame order
         for video_id in self.video_to_images:
             self.video_to_images[video_id].sort(
                 key=lambda x: x.get("order_in_video", 0)
             )
+
+        # Index: image-id -> index in self.images for O(1) lookups
+        self.image_id_to_idx: Dict[int, int] = {img["id"]: i for i, img in enumerate(self.images)}
 
         # Default transform
         self.transform = T.Compose(
@@ -97,8 +108,8 @@ class COCOImageDataset(Dataset):
             ]
         )
 
-        # Cache for decoded masks
-        self.mask_cache = {}
+        # Cache for decoded masks per image
+        self.mask_cache: Dict[int, torch.Tensor] = {}
 
         logger.info(f"Loaded COCO image dataset with {len(self.images)} images")
 
@@ -116,7 +127,10 @@ class COCOImageDataset(Dataset):
             np.ndarray: Decoded binary mask
         """
         mask = mask_utils.decode(rle_data)
-        return mask
+        # Ensure 2D [H, W]
+        if mask.ndim == 3:
+            mask = mask[..., 0]
+        return mask.astype(np.uint8)
 
     @logger.catch(onerror=lambda _: sys.exit(1))
     def _load_gt_masks_for_image(self, image_id: int) -> torch.Tensor:
@@ -141,22 +155,28 @@ class COCOImageDataset(Dataset):
         )
 
         for ann in annotations:
-            segmentation = ann["segmentation"]
-            category_id = ann["category_id"]
-            if segmentation is None:
+            segmentation = ann.get("segmentation")
+            cat_id = ann.get("category_id")
+            if segmentation is None or cat_id is None:
                 continue
 
-            # Decode the segmentation mask
-            mask = self._decode_rle_mask(segmentation)
-            mask = np.expand_dims(mask, axis=0)
-            mask = torch.from_numpy(mask).float()
-            mask = F.resize(mask, [self.image_size], T.InterpolationMode.NEAREST)
-            mask = F.center_crop(mask, [self.image_size])
-            mask = mask.squeeze(0)
+            # Map raw category id to contiguous index when possible
+            cat_idx = self.catid_to_idx.get(cat_id)
+            if cat_idx is None or cat_idx >= self.num_categories:
+                # Skip categories out of configured range
+                continue
 
-            masks[category_id] = torch.maximum(masks[category_id], mask)
+            # Decode and transform mask to align with image transforms
+            m_np = self._decode_rle_mask(segmentation)  # [H, W]
+            m = torch.from_numpy(m_np).unsqueeze(0).float()  # [1, H, W]
+            m = F.resize(m, self.image_size, T.InterpolationMode.NEAREST)
+            m = F.center_crop(m, [self.image_size, self.image_size])
+            m = (m.squeeze(0) > 0.5)  # [H, W] -> bool
 
-        # Cache the result
+            # Merge multiple instances of same category with OR
+            masks[cat_idx] |= m
+
+        # Cache the result and return
         self.mask_cache[cache_key] = masks
         return masks
 
@@ -176,8 +196,8 @@ class COCOImageDataset(Dataset):
         """
         img_info = self.images[idx]
 
-        # Load image
-        image_path = img_info["path"]
+        # Load image (require COCO-standard 'file_name'; fail-fast if absent)
+        image_path = img_info["file_name"]
         image = Image.open(image_path).convert("RGB")
         image_tensor = self.transform(image)
 
@@ -187,9 +207,7 @@ class COCOImageDataset(Dataset):
 
         return {
             "image": image_tensor,  # [C, H, W]
-            "masks": mask_tensor,  # [N, H, W] where N is number of objects
-            # "image_info": img_info,  # Original image metadata
-            # "video_id": img_info["video_id"],
+            "masks": mask_tensor,  # [N, H, W] where N is number of categories
         }
 
 
@@ -234,7 +252,8 @@ class VideoDataset(Dataset):
                 # Store the image indices for this clip
                 clip_image_indices = []
                 for i in range(self.video_clip_length):
-                    img_idx = self._find_image_index_by_id(images[clip_start + i]["id"])
+                    img_id = images[clip_start + i]["id"]
+                    img_idx = self.image_dataset.image_id_to_idx[img_id]
                     clip_image_indices.append(img_idx)
 
                 self.clip_indices.append(
@@ -248,11 +267,8 @@ class VideoDataset(Dataset):
                 clip_start += self.stride
 
     def _find_image_index_by_id(self, image_id: int) -> int:
-        """Find the index of an image in the dataset by its ID."""
-        for idx, img_info in enumerate(self.image_dataset.images):
-            if img_info["id"] == image_id:
-                return idx
-        raise ValueError(f"Image ID {image_id} not found in dataset")
+        """Direct lookup; raises KeyError if not found (fail-fast)."""
+        return self.image_dataset.image_id_to_idx[image_id]
 
     def __len__(self):
         return len(self.clip_indices)
@@ -271,33 +287,9 @@ class VideoDataset(Dataset):
         clip_info = self.clip_indices[idx]
         image_indices = clip_info["image_indices"]
 
-        # Load all images in the clip
-        images = []
-        masks = []
-        # first_frame_prompts = []
-
-        for i, img_idx in enumerate(image_indices):
-            # Get single image data
-            img_data = self.image_dataset[img_idx]
-            images.append(img_data["image"])
-            masks.append(img_data["masks"])
-
-            # # Generate prompts only for first frame
-            # if i == 0:
-            #     # For first frame, generate prompts for all objects
-            #     for mask in img_data["masks"]:
-            #         # Note: This assumes prompt_generator exists somewhere
-            #         # We'll need to handle this in the refactoring step
-            #         prompt_dict = {"mask": mask.squeeze(0).detach().cpu().numpy()}
-            #         first_frame_prompts.append(prompt_dict)
-
-        # Stack images
-        images = torch.stack(
-            [self.image_dataset[i]["image"] for i in image_indices]
-        )  # [T, C, H, W]
-        masks = torch.stack(
-            [self.image_dataset[i]["masks"] for i in image_indices]
-        )  # [T, N, H, W]
+        # Materialize tensors for the clip
+        images = torch.stack([self.image_dataset[i]["image"] for i in image_indices])  # [T, C, H, W]
+        masks = torch.stack([self.image_dataset[i]["masks"] for i in image_indices])  # [T, N, H, W]
 
         return {
             "images": images,
@@ -306,7 +298,7 @@ class VideoDataset(Dataset):
 
 
 class COCODataset(Dataset):
-    """COCO format dataset for video training - now a wrapper around VideoDataset."""
+    """COCO-format video dataset: builds temporal clips on top of single-image COCO dataset."""
 
     @logger.catch(onerror=lambda _: sys.exit(1))
     def __init__(
@@ -323,19 +315,11 @@ class COCODataset(Dataset):
         """
         self.config = config
 
-        # Create a modified config for the image dataset if path override is provided
-        image_config = config
-        if coco_json_path is not None:
-            # Create a copy of config with overridden path
-            from dataclasses import replace
-
-            image_config = replace(config, train_path=coco_json_path)
-            image_config.coco_json_path = coco_json_path  # Set for COCOImageDataset
-        else:
-            image_config.coco_json_path = config.train_path  # Default to train_path
-
-        # Create the image dataset
-        image_dataset = COCOImageDataset(config=image_config)
+        # Create the image dataset with explicit annotation path
+        image_dataset = COCOImageDataset(
+            config=config,
+            json_path=coco_json_path or config.train_path,
+        )
 
         # Create the video dataset
         self.video_dataset = VideoDataset(
@@ -362,10 +346,14 @@ def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDa
     # 1. 拼图像 [T, B, C, H, W]
     images = torch.stack([s["images"] for s in batch_list]).permute(1, 0, 2, 3, 4)
     T, B, C, H, W = images.shape
+    # KISS: current pipeline assumes batch size of 1 for tracking simplicity
+    assert (
+        B == 1
+    ), f"Only batch_size=1 is supported in the simplified pipeline, got B={B}"
 
     # 2. 取 masks [B, T, N, H, W] -> [T, B, N, H, W]
     masks = torch.stack([s["masks"] for s in batch_list]).permute(1, 0, 2, 3, 4)
-    N = masks.shape[2]  # 每帧固定物体数
+    N = masks.shape[2]  # 每帧固定物体数（类别数）
 
     # 3. 构造索引与元数据（无过滤、无 padding）
     obj_to_frame_idx = torch.stack(

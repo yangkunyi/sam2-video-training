@@ -10,6 +10,7 @@ import torch.optim as optim
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from loguru import logger
+import sys
 import json
 import random
 import numpy as np
@@ -18,34 +19,7 @@ from core.sam2model import SAM2Model
 from core.dataset import sam2_collate_fn
 from core.loss_fns import MultiStepMultiMasksAndIous, CORE_LOSS_KEY
 from core.config import Config
-
-
-# Import SAM2 data utilities for format conversion
-try:
-    from sam2.training.utils.data_utils import (
-        BatchedVideoDatapoint,
-        BatchedVideoMetaData,
-    )
-
-    SAM2_AVAILABLE = True
-except ImportError:
-    SAM2_AVAILABLE = False
-    # Define fallback classes if SAM2 is not available
-    from dataclasses import dataclass
-    from typing import Optional
-
-    @dataclass
-    class BatchedVideoMetaData:
-        unique_objects_identifier: torch.LongTensor
-        frame_orig_size: torch.LongTensor
-
-    @dataclass
-    class BatchedVideoDatapoint:
-        img_batch: torch.FloatTensor
-        obj_to_frame_idx: torch.IntTensor
-        masks: torch.BoolTensor
-        metadata: BatchedVideoMetaData
-        dict_key: str
+from core.data_utils import BatchedVideoDatapoint, BatchedVideoMetaData
 
 
 from torch.utils.data import DataLoader
@@ -81,6 +55,7 @@ class SAM2LightningModule(L.LightningModule):
         self.best_val_loss = float("inf")
         self.val_step_outputs = []
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def setup(self, stage: str):
         """Setup model when stage starts."""
         if stage == "fit":
@@ -97,6 +72,7 @@ class SAM2LightningModule(L.LightningModule):
                 f"{model_info['trainable_parameters']:,} trainable params"
             )
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def configure_optimizers(self) -> Dict[str, Any]:
         """Configure optimizer and scheduler."""
         # Get trainable parameters
@@ -147,10 +123,12 @@ class SAM2LightningModule(L.LightningModule):
         else:
             return {"optimizer": optimizer}
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, batch: BatchedVideoDatapoint):
         """Forward pass returning per-frame outputs (list of dicts)."""
         return self.model(batch)
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def training_step(
         self, batch: BatchedVideoDatapoint, batch_idx: int
     ) -> torch.Tensor:
@@ -159,8 +137,7 @@ class SAM2LightningModule(L.LightningModule):
         outs_per_frame, obj_to_cat = self.forward(batch)
         
 
-        target_masks = batch.masks # Ground truth masks [T, N, H, W]
-        images = batch.img_batch.squeeze(1)  # [T, C, H, W]
+        target_masks = batch.masks  # Ground truth masks [T, N, H, W]
         
 
         # Compute multi-step loss across frames
@@ -172,10 +149,10 @@ class SAM2LightningModule(L.LightningModule):
         self.log("train/loss_dice", losses["loss_dice"], logger=True)
         self.log("train/loss_iou", losses["loss_iou"], logger=True)
 
-        # Log learning rate
-        sch = self.lr_schedulers()
-        if sch is not None:
-            lr = self.optimizers().param_groups[0]["lr"]
+        # Log learning rate (if available)
+        opt = self.optimizers()
+        if opt is not None and hasattr(opt, "param_groups"):
+            lr = opt.param_groups[0]["lr"]
             self.log("train/learning_rate", lr, prog_bar=True, logger=True)
 
         # GIF logging for training
@@ -185,6 +162,7 @@ class SAM2LightningModule(L.LightningModule):
 
         return total_loss
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def validation_step(
         self, batch: BatchedVideoDatapoint, batch_idx: int
     ) -> torch.Tensor:
@@ -192,8 +170,7 @@ class SAM2LightningModule(L.LightningModule):
         # Forward pass - batch is already in BatchedVideoDatapoint format
         outs_per_frame, obj_to_cat = self.forward(batch)
 
-        # Ground truth masks [T, N, H, W]
-        target_masks = batch.masks
+        target_masks = batch.masks  # [T, N, H, W]
 
         # Compute multi-step loss across frames
         losses = self.criterion(outs_per_frame, target_masks)
@@ -209,6 +186,7 @@ class SAM2LightningModule(L.LightningModule):
 
         return total_loss
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def _should_log_gif(self, split: str, batch_idx: int) -> bool:
         """Check if GIF should be logged for current step/epoch."""
         if not self.config.visualization.enabled or not self.trainer.is_global_zero:
@@ -223,31 +201,30 @@ class SAM2LightningModule(L.LightningModule):
         
         return False
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def _log_gif(self, frames: torch.Tensor, gt_masks: torch.Tensor, 
                  outs_per_frame: List[Dict], obj_to_cat: List[int], split: str) -> None:
         """Create and log GIF visualization."""
-        try:
-            from core.utils import create_visualization_gif
-            import swanlab
-            
-            gif_path = create_visualization_gif(
-                frames=frames,
-                gt_masks=gt_masks,
-                outs_per_frame=outs_per_frame,
-                obj_to_cat=obj_to_cat,
-                max_length=self.config.visualization.max_length,
-                stride=self.config.visualization.stride,
-            )
-            
-            if gif_path:
-                caption = f"{self.config.visualization.caption} | {split} e{self.current_epoch} s{self.global_step}"
-                self.logger.experiment.log({
-                    "video": swanlab.Video(gif_path, caption=caption)
-                })
-                logger.info(f"Logged {split} GIF: {gif_path}")
-        except Exception as e:
-            logger.warning(f"Failed to log {split} GIF: {e}")
+        from core.utils import create_visualization_gif
+        import swanlab
 
+        gif_path = create_visualization_gif(
+            frames=frames,
+            gt_masks=gt_masks,
+            outs_per_frame=outs_per_frame,
+            obj_to_cat=obj_to_cat,
+            max_length=self.config.visualization.max_length,
+            stride=self.config.visualization.stride,
+        )
+
+        if gif_path:
+            caption = f"{self.config.visualization.caption} | {split} e{self.current_epoch} s{self.global_step}"
+            self.logger.experiment.log({
+                "video": swanlab.Video(gif_path, caption=caption)
+            })
+            logger.info(f"Logged {split} GIF: {gif_path}")
+
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def on_validation_epoch_end(self):
         """Validation epoch end."""
         if not self.val_step_outputs:
@@ -277,6 +254,7 @@ class SAM2LightningModule(L.LightningModule):
         # Clear outputs
         self.val_step_outputs.clear()
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def _save_best_model(self):
         """Save best model checkpoint."""
         if self.trainer.is_global_zero:
@@ -293,6 +271,7 @@ class SAM2LightningModule(L.LightningModule):
             torch.save(checkpoint, checkpoint_path)
             logger.info(f"Best model saved: {checkpoint_path}")
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def on_train_end(self):
         """Training end callback."""
         logger.info(
@@ -330,6 +309,7 @@ class SAM2LightningDataModule(L.LightningDataModule):
         self.val_dataset = None
         self.save_hyperparameters()
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def setup(self, stage: str):
         """Setup datasets for training and validation."""
         from core.dataset import COCODataset  # Import here to avoid circular
@@ -347,6 +327,7 @@ class SAM2LightningDataModule(L.LightningDataModule):
                 coco_json_path=self.config.data.val_path,
             )
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def train_dataloader(self):
         """Return training dataloader."""
         if self.train_dataset is None:
@@ -361,6 +342,7 @@ class SAM2LightningDataModule(L.LightningDataModule):
             collate_fn=sam2_collate_fn,
         )
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def val_dataloader(self):
         """Return validation dataloader."""
         if self.val_dataset is None:
@@ -376,6 +358,3 @@ class SAM2LightningDataModule(L.LightningDataModule):
             pin_memory=True,
             collate_fn=sam2_collate_fn,
         )
-
-
-

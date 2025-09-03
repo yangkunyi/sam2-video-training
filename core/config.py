@@ -54,7 +54,7 @@ class SwanLabConfig:
 class DataConfig:
     """Configuration for dataset."""
 
-    coco_json_path: str
+    # Paths to COCO annotation files
     train_path: str = "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_train.json"
     val_path: str = "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_test.json"
     image_size: int = 512
@@ -63,7 +63,7 @@ class DataConfig:
 
     num_workers: int = 4
     batch_size: int = 1  # Limited by GPU memory
-    num_categories: Optional[int] = 13  # For COCO dataset
+    num_categories: Optional[int] = 13  # Number of categories to allocate masks for
 
 
 @dataclass

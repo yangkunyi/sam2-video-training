@@ -10,6 +10,8 @@ from typing import Dict, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+from loguru import logger
 
 # Local constant to avoid circular import
 CORE_LOSS_KEY = "total_loss"
@@ -163,6 +165,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
         num_objects = float(targets_batch.shape[1])  # Number of objects is fixed within a batch
@@ -175,6 +178,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
         return losses
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects):
         """
         Compute the losses related to the masks: the focal loss and the dice loss.

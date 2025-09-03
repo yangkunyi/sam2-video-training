@@ -4,16 +4,12 @@ with core training functionality. Eliminates the wrapper pattern for better
 maintainability.
 """
 
-import inspect
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
-import hydra.core.global_hydra as ghd
-import numpy as np
 import torch
 import torch.nn as nn
 from loguru import logger
+import sys
 from sam2.build_sam import build_sam2
 
 # SAM2 core imports
@@ -24,7 +20,6 @@ from core import utils
 # Local imports
 from core.config import ModelConfig
 from core.data_utils import BatchedVideoDatapoint
-from core.utils import extract_shape_info
 from core.utils import merge_object_results_to_category
 
 
@@ -59,6 +54,7 @@ class SAM2Model(SAM2Base):
         self.checkpoint_path = model_config.checkpoint_path
         self.config_path = model_config.config_path
         self.image_size = model_config.image_size
+        self.device = model_config.device
 
         # 2. 一些训练相关的断言/开关
         self.prompt_type = model_config.prompt_type
@@ -70,9 +66,13 @@ class SAM2Model(SAM2Base):
         )
 
         # 3. 先构建一个完整的 SAM2 模型
-        logger.info(f"Building SAM2 model from config: {self.config_path}")
+        # Resolve config path relative to repository if needed
+        cfg_path = Path(self.config_path)
+        if not cfg_path.is_file():
+            raise FileNotFoundError(f"Model config path not found: {self.config_path}")
+        logger.info(f"Building SAM2 model from config: {cfg_path}")
         sam2_model = build_sam2(
-            self.config_path, self.checkpoint_path, device=model_config.device
+            str(cfg_path), self.checkpoint_path, device=model_config.device
         )
         super().__init__(
             image_encoder=sam2_model.image_encoder,
@@ -119,6 +119,7 @@ class SAM2Model(SAM2Base):
         """
         return self
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(
         self, input: BatchedVideoDatapoint
     ) -> Tuple[List[Dict[str, torch.Tensor]], List[int]]:
@@ -146,6 +147,7 @@ class SAM2Model(SAM2Base):
 
         return out, backbone_out["obj_to_cat"]
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def prepare_prompt_inputs(self, backbone_out, input, start_frame_idx=0):
         """
         Simplified prompt preparation - only adds prompt to first frame.
@@ -200,6 +202,7 @@ class SAM2Model(SAM2Base):
 
         return backbone_out
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def _prepare_backbone_features_per_frame(self, img_batch, img_ids):
         """Compute the image backbone features on the fly for the given img_ids."""
         # Only forward backbone on unique image ids to avoid repetitive computation
@@ -227,6 +230,7 @@ class SAM2Model(SAM2Base):
 
         return image, vision_feats, vision_pos_embeds, feat_sizes
 
+    @logger.catch(onerror=lambda _: sys.exit(1))
     def forward_tracking(
         self, backbone_out, input: BatchedVideoDatapoint, return_dict=False
     ):
@@ -389,6 +393,10 @@ class SAM2Model(SAM2Base):
         current_out["multistep_point_inputs"] = [point_inputs]
         current_out["multistep_object_score_logits"] = [object_score_logits]
 
+        # Expose single-step prompts for downstream visualization/merging
+        current_out["point_inputs"] = point_inputs
+        current_out["mask_inputs"] = mask_inputs
+
         # Use final prediction for output (no correction needed)
         current_out["pred_masks"] = low_res_masks
         current_out["pred_masks_high_res"] = high_res_masks
@@ -495,6 +503,7 @@ class SAM2Model(SAM2Base):
             "config_path": self.config_path,
             "device": self.device,
             "image_size": self.image_size,
-            "max_objects": self.model_config.max_objects,
+            "prompt_type": self.model_config.prompt_type,
+            "trainable_modules": self.model_config.trainable_modules,
         }
         utils.save_model_config(config, path)

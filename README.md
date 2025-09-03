@@ -4,129 +4,63 @@ A simplified, clean implementation for training SAM2 memory modules on video dat
 
 ## Features
 
-- **Unified Training**: Single entry point for all training workflows using PyTorch Lightning
-- **Simplified Configuration**: Clean YAML-based configuration system
-- **Multi-Object Support**: Handle multiple objects in video sequences
-- **Flexible Datasets**: Support for both video directory and COCO format datasets
-- **Modern Training**: Mixed precision, distributed training, automatic checkpointing
-- **Comprehensive Logging**: Integration with Weights & Biases and TensorBoard
+- Unified training via PyTorch Lightning
+- Clean Hydra + dataclass configs
+- Multi-object, per-category masks from COCO
+- Mixed precision, checkpoints, LR monitor
+- SwanLab visualizations (optional)
 
 ## Quick Start
 
-### 1. Create a Configuration
+### 1. Install dependencies
 
-Generate a sample configuration file:
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
-```bash
-python train.py --create-config
-```
+pip install git+https://github.com/facebookresearch/segment-anything-2.git
 
-Update the paths in `sample_config.yaml`:
+### 2. Train
 
-```yaml
-model:
-  checkpoint_path: "/path/to/sam2_hiera_tiny.pt"
-  config_path: "/path/to/sam2_config.yaml"
-  trainable_modules: ["memory_attention", "memory_encoder"]
+python train.py
 
-dataset:
-  data_path: "/path/to/video_data"
-  image_size: [512, 512]
-  video_clip_length: 5
-  batch_size: 1
+Common overrides:
 
-trainer:
-  max_epochs: 50
-  accelerator: "auto"
-  precision: "16-mixed"
+- Paths: `python train.py model.checkpoint_path=/path/sam2.pt model.config_path=/path/sam2.yaml`
+- Data: `python train.py data.train_path=/data/train.json data.val_path=/data/val.json`
+- Hardware: `python train.py trainer.accelerator=gpu trainer.devices=1 trainer.precision=16-mixed`
 
-use_wandb: true
-wandb_project: "sam2-training"
-```
+## Project Structure
 
-### 2. Start Training
+- `train.py`: Single entry (Hydra + Lightning)
+- `configs/`: Hydra configs grouped by domain
+- `core/`: Training stack
+  - `sam2model.py`: SAM2 wrapper and forward
+  - `trainer.py`: Lightning modules
+  - `dataset.py`: COCO→video clips + collate
+  - `loss_fns.py`: Losses
+  - `config.py`: Dataclass configs
+  - `utils.py`: Prompts, visualization, helpers
 
-```bash
-# Basic training
-python train.py --config sample_config.yaml
+## Configuration Notes
 
-# Override parameters from command line
-python train.py --config sample_config.yaml --lr 1e-4 --max-epochs 100
-
-# Without wandb
-python train.py --config sample_config.yaml --no-wandb
-
-# Quick test with debug logging
-python train.py --config sample_config.yaml --debug --max-epochs 2
-```
-
-## Directory Structure
-
-```
-sam2-video-training/
-├── train.py                 # Main training script (single entry point)
-├── config.py               # Simplified configuration system
-├── core/                   # Core modules
-│   ├── model/
-│   │   └── sam2.py        # Unified SAM2 model and tracker
-│   ├── data/
-│   │   └── dataset.py     # Simplified dataset implementations
-│   ├── training/
-│   │   ├── trainer.py     # Lightning trainer module
-│   │   └── loss.py        # Loss functions
-│   └── utils/
-│       └── helpers.py     # Utility functions
-├── requirements.txt       # Python dependencies
-└── README.md              # This file
-```
-
-## Configuration
-
-The configuration system uses simple dataclasses with YAML support. Key sections:
-
-### Model Configuration
-- `checkpoint_path`: Path to SAM2 checkpoint
-- `config_path`: Path to SAM2 configuration file  
-- `trainable_modules`: List of modules to train (e.g., ["memory_attention", "memory_encoder"])
-
-### Dataset Configuration  
-- `data_path`: Path to video data directory
-- `image_size`: Target image size [height, width]
-- `video_clip_length`: Number of frames per video clip
-- `batch_size`: Training batch size
-
-### Training Configuration
-- `max_epochs`: Maximum training epochs
-- `accelerator`: Training accelerator (auto, cpu, gpu)
-- `precision`: Training precision (16-mixed, 32-true)
-- `lr`: Learning rate
+- `data.*`: set `train_path`, `val_path`, `image_size`, `video_clip_length`, `stride`, `batch_size`
+- `model.*`: provide `checkpoint_path`, `config_path`; set prompt via `prompt_type` in {point, box, mask}
+- `visualization.*`: enable/disable GIF logging; defaults are conservative
 
 ## Data Format
 
-### Video Dataset Structure
-Organize your video data as:
-```
-video_data/
-├── video_001/
-│   ├── frame_001.jpg
-│   ├── frame_002.jpg
-│   └── ...
-├── video_002/
-│   ├── frame_001.jpg
-│   └── ...
-```
+COCO-style JSON with `images`, `annotations`, `categories` and additional fields:
 
-### COCO Dataset Format
-Provide a COCO JSON file with video annotations including video_id and order_in_video fields.
+- `images[*].video_id`: integer grouping frames
+- `images[*].order_in_video`: sorting within a video
+ - Fail-fast required keys per image: `id`, `file_name`, `video_id`, `order_in_video`
+
+`annotations[*].segmentation` must be RLE for efficiency. Category ids are remapped to contiguous indices.
 
 ## Training Features
 
-- **PyTorch Lightning**: Modern training framework with automatic optimization
-- **Mixed Precision**: 16-bit training for better performance
-- **Automatic Checkpointing**: Save best models and restore training
-- **Multi-GPU**: Built-in distributed training support
-- **Early Stopping**: Optional early stopping based on validation loss
-- **Learning Rate Monitoring**: Track learning rate changes
+- Lightning with mixed precision
+- Checkpointing and LR monitor
+- Optional early stopping
 
 ## Loss Functions
 
@@ -138,39 +72,15 @@ The training uses a combined loss function with configurable weights:
 
 ## Examples
 
-### Basic Training
-```bash
-python train.py \
-  --model-checkpoint /models/sam2_hiera_tiny.pt \
-  --model-config /models/sam2_config.yaml \
-  --data-path /data/videos \
-  --lr 1e-4 \
-  --max-epochs 50
-```
-
-### Debug Mode
-```bash
-python train.py \
-  --config config.yaml \
-  --debug \
-  --no-wandb \
-  --max-epochs 2
-```
-
-### Multi-GPU Training
-```bash
-python train.py \
-  --config config.yaml \
-  --accelerator gpu \
-  --devices 4
-```
+python train.py data.train_path=/data/train.json data.val_path=/data/val.json \
+  model.checkpoint_path=/models/sam2.pt model.config_path=/models/sam2.yaml \
+  trainer.accelerator=gpu trainer.devices=1
 
 ## Output
 
-Training outputs are saved to:
-- `checkpoints/`: Model checkpoints (best_model.pth, epoch checkpoints)
-- `config.yaml`: Training configuration used
-- `training_metrics.json`: Final training metrics and statistics
+- `outputs/<date>/<time>/checkpoints`: checkpoint files
+- `outputs/<date>/<time>/config.yaml`: resolved run config
+- `outputs/<date>/<time>/training.log`: run logs
 
 ## Requirements
 
@@ -197,5 +107,17 @@ The old complex structure has been simplified:
 
 - **Before**: Over-engineered model loading and tracking separation
 - **After**: Single unified `SAM2Model` class
+
+## Fail-Fast Behavior
+
+- Errors in core methods are decorated with `@logger.catch(onerror=lambda _: sys.exit(1))` and will stop the run with a clear message.
+- Dataset must include non-empty `categories` and valid `file_name` for each image.
+- Prompt generation requires non-empty masks; otherwise it raises.
+- Batch size is enforced to 1 in the collate for simpler tracking assumptions.
+
+Validate your dataset before training:
+
+python scripts/dataset_sanity_check.py /path/to/train.json --check-files
+
 
 The refactored code is approximately **70% smaller** and significantly easier to maintain and extend.

@@ -34,6 +34,7 @@ def main(cfg: DictConfig) -> None:
     """Main entry point with consolidated training logic and Hydra configuration management."""
 
     OUTPUT_DIR = Path(HydraConfig.get().run.dir)
+    # Structured dataclass object for internal use
     config: Config = OmegaConf.to_object(cfg)
     # =====================================
     # SECTION 1: LOGGING SETUP
@@ -62,7 +63,7 @@ def main(cfg: DictConfig) -> None:
     L.seed_everything(config.seed)
 
     logger.info("Starting SAM2 training...")
-    logger.info(f"Configuration: {OmegaConf.to_yaml(config)}")
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # =====================================
     # SECTION 3: DIRECTORY & CONFIG SETUP
@@ -72,7 +73,7 @@ def main(cfg: DictConfig) -> None:
 
     # Save configuration
     config_path = OUTPUT_DIR / "config.yaml"
-    OmegaConf.save(config, config_path)
+    OmegaConf.save(cfg, config_path)
     logger.info(f"Configuration saved to {config_path}")
 
     # =====================================

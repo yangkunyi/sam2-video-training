@@ -26,4 +26,3 @@ forward_backbone_per_frame_for_eval: false
 num_pos_points: 2
 num_neg_points: 0
 include_center: true
-

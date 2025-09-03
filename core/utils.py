@@ -23,8 +23,10 @@ from dataclasses import dataclass
 from torch import Tensor
 from typing import List, Dict, Optional
 import imageio
+import sys
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def generate_point_prompt(
     mask: torch.Tensor,
     num_pos_points: int = 1,
@@ -58,7 +60,7 @@ def generate_point_prompt(
     dtype = torch.float32
 
     # 去掉 channel 维，便于后续处理
-    mask = mask.squeeze(1)  # [B, H, W]
+    mask = (mask.squeeze(1) > 0).to(torch.uint8)  # [B, H, W] as 0/1
 
     # 预分配结果
     total_points = num_pos_points + num_neg_points
@@ -72,9 +74,15 @@ def generate_point_prompt(
         pos_coords = torch.stack(torch.where(m == 1), dim=1)  # [N_pos, 2] (y, x)
         num_pos_available = pos_coords.shape[0]
 
-        # 计算几何中心
-        cy, cx = ndimage.center_of_mass(m.cpu().numpy())
-        center = torch.tensor([cx, cy], dtype=dtype, device=device)
+        if num_pos_points > 0 and num_pos_available == 0:
+            raise ValueError("generate_point_prompt: no positive pixels available for sampling")
+
+        # 计算几何中心（仅在存在正样本时）
+        if num_pos_available > 0:
+            cy, cx = ndimage.center_of_mass(m.cpu().numpy())
+            center = torch.tensor([cx, cy], dtype=dtype, device=device)
+        else:
+            center = torch.empty(2, dtype=dtype, device=device)
 
         # 采样正样本点
         if include_center and num_pos_points > 0:
@@ -120,6 +128,7 @@ def generate_point_prompt(
     return points_all, labels_all
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def generate_box_prompt(mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     根据二值 mask 自动生成一个方框提示（box prompt）。
@@ -142,9 +151,10 @@ def generate_box_prompt(mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
     labels = torch.empty((B, 2), dtype=torch.int32, device=mask.device)
 
     for i in range(B):
-        m = mask[i, 0].cpu().numpy()  # [H, W]
+        m = (mask[i, 0] > 0).cpu().numpy()  # [H, W]
         ys, xs = np.where(m > 0)
-
+        if xs.size == 0:
+            raise ValueError("generate_box_prompt: no positive pixels to form a bounding box")
         x_min, x_max = xs.min(), xs.max()
         y_min, y_max = ys.min(), ys.max()
 
@@ -161,6 +171,7 @@ def generate_box_prompt(mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
     return points, labels
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def find_connected_components(mask: torch.Tensor) -> List[torch.Tensor]:
     """
     Find connected components in a binary mask and return list of individual component masks.
@@ -174,7 +185,7 @@ def find_connected_components(mask: torch.Tensor) -> List[torch.Tensor]:
     mask_np = mask.cpu().numpy().astype(np.uint8)
 
     # Define kernel for morphological operations
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
     # Apply opening operation: erosion followed by dilation
     # This eliminates small regions and noise
@@ -198,7 +209,8 @@ def find_connected_components(mask: torch.Tensor) -> List[torch.Tensor]:
     return connected_areas
 
 
-def cat_to_obj_mask(cat_frame_masks) -> Tuple[torch.Tensor, List[int], int]:
+@logger.catch(onerror=lambda _: sys.exit(1))
+def cat_to_obj_mask(cat_frame_masks: torch.Tensor) -> Tuple[torch.Tensor, List[int], int]:
     """
     Splits a single mask into multiple masks for each object.
 
@@ -210,20 +222,24 @@ def cat_to_obj_mask(cat_frame_masks) -> Tuple[torch.Tensor, List[int], int]:
         - object_masks: torch.Tensor with individual object masks
         - obj_to_cat_mapping: Dict mapping object IDs to category IDs
     """
-    N = cat_frame_masks.shape[0]
+    # cat_frame_masks: [num_categories, B, H, W] with B=1 here
+    N = int(cat_frame_masks.shape[0])
     obj_to_cat = []
     obj_masks_list = []
     for catergory_idx in range(N):
-        category_mask = cat_frame_masks[catergory_idx][0]
+        category_mask = (cat_frame_masks[catergory_idx][0] > 0).to(torch.float32)
         if category_mask.sum() == 0:
             continue
         connected_areas = find_connected_components(category_mask)
         for area_mask in connected_areas:
             obj_masks_list.append(area_mask)
             obj_to_cat.append(catergory_idx)
+    if not obj_masks_list:
+        raise ValueError("cat_to_obj_mask: no objects found in category masks (fail-fast)")
     return torch.stack(obj_masks_list).unsqueeze(1), obj_to_cat, N
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def merge_object_results_to_category(
     previous_stages_out: List[Dict[str, Any]],
     obj_to_cat: List[int],
@@ -321,32 +337,16 @@ def merge_object_results_to_category(
         merged: Dict[str, Any] = {}
 
         # Determine weights from available masks
-        weights_source = None
         if isinstance(frame_out.get("pred_masks_high_res"), torch.Tensor):
             weights_source = frame_out["pred_masks_high_res"]  # [N, 1, H, W]
         elif isinstance(frame_out.get("pred_masks"), torch.Tensor):
             weights_source = frame_out["pred_masks"]  # [N, 1, H, W]
-
-        weights: torch.Tensor
-        if weights_source is not None:
-            weights = _area_weights_from_masks(weights_source)
         else:
-            # Fallback to uniform weights
-            device = None
-            if (
-                isinstance(frame_out.get("multistep_pred_ious"), list)
-                and frame_out["multistep_pred_ious"]
-            ):
-                device = frame_out["multistep_pred_ious"][0].device
-            elif (
-                isinstance(frame_out.get("multistep_object_score_logits"), list)
-                and frame_out["multistep_object_score_logits"]
-            ):
-                device = frame_out["multistep_object_score_logits"][0].device
-            else:
-                # Default to CPU float tensor
-                device = torch.device("cpu")
-            weights = torch.ones(len(obj_to_cat), device=device)
+            raise ValueError(
+                "Weights source not found in frame outputs; expected 'pred_masks' or 'pred_masks_high_res'"
+            )
+
+        weights: torch.Tensor = _area_weights_from_masks(weights_source)
 
         # 1) Merge mask-like keys by pixelwise max (union)
         for key in (
@@ -473,6 +473,7 @@ def setup_trainable_modules(
             )
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def freeze_module_by_name(
     module_mapping: Dict[str, nn.Module], module_name: str
 ) -> None:
@@ -489,9 +490,10 @@ def freeze_module_by_name(
             param.requires_grad = False
         logger.info(f"Module '{module_name}' frozen")
     else:
-        logger.warning(f"Module '{module_name}' not found")
+        raise KeyError(f"Module '{module_name}' not found")
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def unfreeze_module_by_name(
     module_mapping: Dict[str, nn.Module], module_name: str
 ) -> None:
@@ -508,9 +510,10 @@ def unfreeze_module_by_name(
             param.requires_grad = True
         logger.info(f"Module '{module_name}' unfrozen")
     else:
-        logger.warning(f"Module '{module_name}' not found")
+        raise KeyError(f"Module '{module_name}' not found")
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def get_trainable_module_names(module_mapping: Dict[str, nn.Module]) -> List[str]:
     """
     Return list of currently trainable module names.
@@ -558,7 +561,7 @@ def extract_shape_info(obj: Any) -> Any:
         return obj  # 基本类型（int, float, str等）直接返回
 
 
-@logger.catch
+@logger.catch(onerror=lambda _: sys.exit(1))
 def create_composite_visualization(
     frame_0: torch.Tensor,  # [C, H, W]
     image: torch.Tensor,  # [C, H, W]
@@ -793,7 +796,7 @@ def create_composite_visualization(
     return composite
 
 
-@logger.catch
+@logger.catch(onerror=lambda _: sys.exit(1))
 def create_visualization_gif(
     frames: torch.Tensor,
     gt_masks: torch.Tensor,
