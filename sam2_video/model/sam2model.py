@@ -15,12 +15,9 @@ from sam2.build_sam import build_sam2
 # SAM2 core imports
 from sam2.modeling.sam2_base import SAM2Base
 
-from core import utils
-
-# Local imports
-from core.config import ModelConfig
-from core.data_utils import BatchedVideoDatapoint
-from core.utils import merge_object_results_to_category
+from sam2_video import utils
+from sam2_video.data.data_utils import BatchedVideoDatapoint
+from sam2_video.utils import merge_object_results_to_category
 
 
 class SAM2Model(SAM2Base):
@@ -40,7 +37,16 @@ class SAM2Model(SAM2Base):
 
     def __init__(
         self,
-        model_config: "ModelConfig",
+        checkpoint_path: str,
+        config_path: str,
+        trainable_modules: Optional[List[str]] = None,
+        device: str = "cuda",
+        image_size: int = 512,
+        prompt_type: str = "point",
+        forward_backbone_per_frame_for_eval: bool = False,
+        num_pos_points: int = 1,
+        num_neg_points: int = 0,
+        include_center: bool = True,
     ):
         """
         Initialize unified SAM2 model with configuration management and training capabilities.
@@ -49,31 +55,22 @@ class SAM2Model(SAM2Base):
             model_config: ModelConfig containing all model configuration
         """
 
-        # 1. 先把配置存下来
-        self.model_config = model_config
-        self.checkpoint_path = model_config.checkpoint_path
-        self.config_path = model_config.config_path
-        self.image_size = model_config.image_size
-        self.device = model_config.device
-
-        # 2. 一些训练相关的断言/开关
-        self.prompt_type = model_config.prompt_type
+        # 1. 保存配置参数为成员变量
+        self.checkpoint_path = checkpoint_path
+        self.config_path = config_path
+        self.image_size = image_size
+        self.prompt_type = prompt_type
         assert self.prompt_type in ["point", "box", "mask"], (
             f"prompt_type must be one of ['point', 'box', 'mask'], got {self.prompt_type}"
         )
-        self.forward_backbone_per_frame_for_eval = (
-            model_config.forward_backbone_per_frame_for_eval
-        )
+        self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
+        self.num_pos_points = num_pos_points
+        self.num_neg_points = num_neg_points
+        self.include_center = include_center
 
         # 3. 先构建一个完整的 SAM2 模型
         # Resolve config path relative to repository if needed
-        cfg_path = Path(self.config_path)
-        if not cfg_path.is_file():
-            raise FileNotFoundError(f"Model config path not found: {self.config_path}")
-        logger.info(f"Building SAM2 model from config: {cfg_path}")
-        sam2_model = build_sam2(
-            str(cfg_path), self.checkpoint_path, device=model_config.device
-        )
+        sam2_model = build_sam2(self.config_path, self.checkpoint_path, device=device)
         super().__init__(
             image_encoder=sam2_model.image_encoder,
             memory_attention=sam2_model.memory_attention,
@@ -98,13 +95,12 @@ class SAM2Model(SAM2Base):
             setattr(self, attr_name, getattr(sam2_model, attr_name))
 
         # 6. 按需冻结权重
-        trainable_modules = model_config.trainable_modules or [
+        trainable_modules = trainable_modules or [
             "memory_attention",
             "memory_encoder",
         ]
         self._setup_trainable_modules(trainable_modules)
 
-        self.loaded = True
         logger.info("Unified SAM2 model initialized successfully")
 
     def load(self, device: str = None) -> "SAM2Model":
@@ -173,11 +169,11 @@ class SAM2Model(SAM2Base):
 
         # Generate prompt for first frame only
         first_frame_cat_mask = gt_masks_per_frame[start_frame_idx]
-        first_frame_mask, obj_to_cat, num_catergories = utils.cat_to_obj_mask(
+        first_frame_mask, obj_to_cat, num_categories = utils.cat_to_obj_mask(
             first_frame_cat_mask
         )
         backbone_out["obj_to_cat"] = obj_to_cat
-        backbone_out["num_categories"] = num_catergories
+        backbone_out["num_categories"] = num_categories
 
         if self.prompt_type == "mask":
             # Use GT mask directly as prompt
@@ -193,9 +189,9 @@ class SAM2Model(SAM2Base):
             # Generate point prompt from GT mask
             points, labels = utils.generate_point_prompt(
                 mask=first_frame_mask,
-                num_pos_points=self.model_config.num_pos_points,
-                num_neg_points=self.model_config.num_neg_points,
-                include_center=self.model_config.include_center,
+                num_pos_points=self.num_pos_points,
+                num_neg_points=self.num_neg_points,
+                include_center=self.include_center,
             )
             point_inputs = {"point_coords": points, "point_labels": labels}
             backbone_out["point_inputs_per_frame"][start_frame_idx] = point_inputs

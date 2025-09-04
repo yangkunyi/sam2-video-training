@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -17,26 +17,10 @@ from loguru import logger
 CORE_LOSS_KEY = "total_loss"
 
 
-
 def dice_loss(inputs, targets, num_objects, loss_on_multimask=False):
-    """
-    Compute the DICE loss, similar to generalized IOU for masks
-    Args:
-        inputs: A float tensor of arbitrary shape.
-                The predictions for each example.
-        targets: A float tensor with the same shape as inputs. Stores the binary
-                 classification label for each element in inputs
-                (0 for the negative class and 1 for the positive class).
-        num_objects: Number of objects in the batch
-        loss_on_multimask: True if multimask prediction is enabled
-    Returns:
-        Dice loss tensor
-    """
     inputs = inputs.sigmoid()
     if loss_on_multimask:
-        # inputs and targets are [N, M, H, W] where M corresponds to multiple predicted masks
         assert inputs.dim() == 4 and targets.dim() == 4
-        # flatten spatial dimension while keeping multimask channel dimension
         inputs = inputs.flatten(2)
         targets = targets.flatten(2)
         numerator = 2 * (inputs * targets).sum(-1)
@@ -58,23 +42,6 @@ def sigmoid_focal_loss(
     gamma: float = 2,
     loss_on_multimask=False,
 ):
-    """
-    Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
-    Args:
-        inputs: A float tensor of arbitrary shape.
-                The predictions for each example.
-        targets: A float tensor with the same shape as inputs. Stores the binary
-                 classification label for each element in inputs
-                (0 for the negative class and 1 for the positive class).
-        num_objects: Number of objects in the batch
-        alpha: (optional) Weighting factor in range (0,1) to balance
-                positive vs negative examples. Default = -1 (no weighting).
-        gamma: Exponent of the modulating factor (1 - p_t) to
-               balance easy vs hard examples.
-        loss_on_multimask: True if multimask prediction is enabled
-    Returns:
-        focal loss tensor
-    """
     prob = inputs.sigmoid()
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
     p_t = prob * targets + (1 - prob) * (1 - targets)
@@ -85,29 +52,14 @@ def sigmoid_focal_loss(
         loss = alpha_t * loss
 
     if loss_on_multimask:
-        # loss is [N, M, H, W] where M corresponds to multiple predicted masks
         assert loss.dim() == 4
-        return loss.flatten(2).mean(-1) / num_objects  # average over spatial dims
+        return loss.flatten(2).mean(-1) / num_objects
     return loss.mean(1).sum() / num_objects
 
 
 def iou_loss(
     inputs, targets, pred_ious, num_objects, loss_on_multimask=False, use_l1_loss=False
 ):
-    """
-    Args:
-        inputs: A float tensor of arbitrary shape.
-                The predictions for each example.
-        targets: A float tensor with the same shape as inputs. Stores the binary
-                 classification label for each element in inputs
-                (0 for the negative class and 1 for the positive class).
-        pred_ious: A float tensor containing the predicted IoUs scores per mask
-        num_objects: Number of objects in the batch
-        loss_on_multimask: True if multimask prediction is enabled
-        use_l1_loss: Whether to use L1 loss is used instead of MSE loss
-    Returns:
-        IoU loss tensor
-    """
     assert inputs.dim() == 4 and targets.dim() == 4
     pred_mask = inputs.flatten(2) > 0
     gt_mask = targets.flatten(2) > 0
@@ -129,26 +81,13 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self,
         weight_dict,
         focal_alpha=0.25,
-        focal_gamma=2,
+        focal_gamma=2.0,
         supervise_all_iou=False,
         iou_use_l1_loss=False,
         pred_obj_scores=False,
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
     ):
-        """
-        This class computes the multi-step multi-mask and IoU losses.
-        Args:
-            weight_dict: dict containing weights for focal, dice, iou losses
-            focal_alpha: alpha for sigmoid focal loss
-            focal_gamma: gamma for sigmoid focal loss
-            supervise_all_iou: if True, back-prop iou losses for all predicted masks
-            iou_use_l1_loss: use L1 loss instead of MSE loss for iou
-            pred_obj_scores: if True, compute loss for object scores
-            focal_gamma_obj_score: gamma for sigmoid focal loss on object scores
-            focal_alpha_obj_score: alpha for sigmoid focal loss on object scores
-        """
-
         super().__init__()
         self.weight_dict = weight_dict
         self.focal_alpha = focal_alpha
@@ -168,7 +107,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
-        num_objects = float(targets_batch.shape[1])  # Number of objects is fixed within a batch
+        num_objects = float(targets_batch.shape[1])
 
         losses = defaultdict(int)
         for outs, targets in zip(outs_batch, targets_batch):
@@ -180,19 +119,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
     @logger.catch(onerror=lambda _: sys.exit(1))
     def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects):
-        """
-        Compute the losses related to the masks: the focal loss and the dice loss.
-        and also the MAE or MSE loss between predicted IoUs and actual IoUs.
-
-        Here "multistep_pred_multimasks_high_res" is a list of multimasks (tensors
-        of shape [N, M, H, W], where M could be 1 or larger, corresponding to
-        one or multiple predicted masks from a click.
-
-        We back-propagate focal, dice losses only on the prediction channel
-        with the lowest focal+dice loss between predicted mask and ground-truth.
-        If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
-        """
-
         target_masks = targets.unsqueeze(1).float()
         assert target_masks.dim() == 4  # [N, 1, H, W]
         src_masks_list = outputs["multistep_pred_multimasks_high_res"]
@@ -202,7 +128,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert len(src_masks_list) == len(ious_list)
         assert len(object_score_logits_list) == len(ious_list)
 
-        # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
         for src_masks, ious, object_score_logits in zip(
             src_masks_list, ious_list, object_score_logits_list
@@ -217,7 +142,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
     ):
         target_masks = target_masks.expand_as(src_masks)
-        # get focal, dice and iou loss on all output masks in a prediction step
         loss_multimask = sigmoid_focal_loss(
             src_masks,
             target_masks,
@@ -263,7 +187,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert loss_multidice.dim() == 2
         assert loss_multiiou.dim() == 2
         if loss_multimask.size(1) > 1:
-            # take the mask indices with the smallest focal + dice loss for back propagation
             loss_combo = (
                 loss_multimask * self.weight_dict["loss_mask"]
                 + loss_multidice * self.weight_dict["loss_dice"]
@@ -272,8 +195,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
             batch_inds = torch.arange(loss_combo.size(0), device=loss_combo.device)
             loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
             loss_dice = loss_multidice[batch_inds, best_loss_inds].unsqueeze(1)
-            # calculate the iou prediction and slot losses only in the index
-            # with the minimum loss for each mask (to be consistent w/ SAM)
             if self.supervise_all_iou:
                 loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
             else:
@@ -283,12 +204,10 @@ class MultiStepMultiMasksAndIous(nn.Module):
             loss_dice = loss_multidice
             loss_iou = loss_multiiou
 
-        # backprop focal, dice and iou loss only if obj present
         loss_mask = loss_mask * target_obj
         loss_dice = loss_dice * target_obj
         loss_iou = loss_iou * target_obj
 
-        # sum over batch dimension (note that the losses are already divided by num_objects)
         losses["loss_mask"] += loss_mask.sum()
         losses["loss_dice"] += loss_dice.sum()
         losses["loss_iou"] += loss_iou.sum()
@@ -303,3 +222,120 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 reduced_loss += losses[loss_key] * weight
 
         return reduced_loss
+
+
+class BCECategoryLoss(nn.Module):
+    """
+    Binary cross-entropy loss across category channels for segmentation masks.
+
+    Expects per-frame predictions aggregated at category level with logits of
+    shape [C, 1, H, W] or [C, H, W] and ground-truth masks of shape [C, H, W]
+    with values in {0, 1} (bool or float). Applies BCE with logits independently
+    per category and averages over pixels and frames.
+
+    This follows the simple formulation:
+
+        BCE(pred_logits, soft_mask, pos_weight=None, reduction='mean')
+
+    where pos_weight optionally addresses class imbalance.
+    """
+
+    def __init__(
+        self,
+        pos_weight: Optional[Union[List[float], torch.Tensor]] = None,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+        # Store as tensor if provided; device/dtype adjusted in forward
+        if isinstance(pos_weight, list):
+            self.register_buffer(
+                "_pos_weight",
+                torch.tensor(pos_weight, dtype=torch.float32),
+                persistent=False,
+            )
+        elif isinstance(pos_weight, torch.Tensor):
+            self.register_buffer(
+                "_pos_weight", pos_weight.to(dtype=torch.float32), persistent=False
+            )
+        else:
+            self._pos_weight = None  # type: ignore
+        self.reduction = reduction
+
+    @staticmethod
+    def _bce_loss(
+        pred_logits: torch.Tensor,
+        soft_mask: torch.Tensor,
+        pos_weight: Optional[torch.Tensor],
+        reduction: str,
+    ):
+        """Helper mirroring the requested API for BCE with logits."""
+        return F.binary_cross_entropy_with_logits(
+            pred_logits,
+            soft_mask,
+            pos_weight=pos_weight,
+            reduction=reduction,
+        )
+    @logger.catch(onerror=lambda _: sys.exit(1))
+    def forward(
+        self, outs_batch: List[Dict], targets_batch: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        assert len(outs_batch) == len(targets_batch), (
+            f"Mismatched sequence lengths: outs={len(outs_batch)} vs targets={len(targets_batch)}"
+        )
+
+        total_loss = 0.0
+        num_frames = len(outs_batch)
+
+        for frame_idx, (outs, targets) in enumerate(zip(outs_batch, targets_batch)):
+            # Select prediction logits at category level
+            logits = outs.get("pred_masks_high_res")
+            if logits is None:
+                logits = outs.get("pred_masks")
+            if logits is None:
+                raise KeyError(
+                    "BCECategoryLoss expects 'pred_masks_high_res' or 'pred_masks' in outputs"
+                )
+
+            # logits: [C, 1, H, W] or [C, H, W]
+            if logits.dim() == 4 and logits.shape[1] == 1:
+                logits = logits.squeeze(1)
+            elif logits.dim() != 3:
+                raise ValueError(
+                    f"Unexpected logits shape for BCECategoryLoss: {tuple(logits.shape)}"
+                )
+            # targets: [C, H, W] (bool or float)
+            if targets.dim() != 3:
+                raise ValueError(
+                    f"Unexpected target shape for BCECategoryLoss: {tuple(targets.shape)}"
+                )
+            soft_mask = targets.to(dtype=logits.dtype)
+
+            valid = targets.sum(dim=(1, 2)).bool()  # [C] 哪些通道有前景
+            logits = logits[valid]
+            soft_mask = soft_mask[valid]
+            pos_w = None
+            # Prepare optional pos_weight
+            if self._pos_weight is not None:
+                # Accept either [C] or [C,1,1] and move to device/dtype
+                if self._pos_weight.dim() == 1:
+                    pos_w = self._pos_weight.to(
+                        device=logits.device, dtype=logits.dtype
+                    ).view(-1, 1, 1)
+                else:
+                    pos_w = self._pos_weight.to(
+                        device=logits.device, dtype=logits.dtype
+                    )
+                if pos_w.shape[0] != logits.shape[0]:
+                    raise ValueError(
+                        f"pos_weight length {pos_w.shape[0]} does not match number of classes {logits.shape[0]}"
+                    )
+            pos_w = pos_w[valid] if pos_w is not None else None
+            loss = self._bce_loss(logits, soft_mask, pos_w, self.reduction)
+            total_loss = total_loss + loss
+
+        # Average over frames for stable scaling
+        total_loss = total_loss / max(num_frames, 1)
+        return {
+            "loss_bce": total_loss,
+            CORE_LOSS_KEY: total_loss,
+        }

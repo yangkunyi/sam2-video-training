@@ -1,0 +1,29 @@
+defaults:
+  - config
+  - _self_
+
+model:
+  trainable_modules:
+    - memory_encoder
+    - memory_attention
+  
+
+trainer:
+  val_check_interval: null
+  log_every_n_steps: 50
+  gradient_clip_val: 0.1
+
+optimizer:
+  lr: 1e-4
+
+visualization:
+  train_every_n_steps: 500
+
+data:
+  video_clip_length: 8
+  stride: 4
+
+loss:
+  type: bce
+  T_max: null
+

@@ -7,7 +7,6 @@ from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, field
 
 # Hydra imports
-from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig
 
 
@@ -21,19 +20,8 @@ class ModelConfig:
         default_factory=lambda: ["memory_attention", "memory_encoder"]
     )
     device: str = "cuda"
-
-    # Tracker parameters
-    num_maskmem: int = 7
+    # Minimal training parameters
     image_size: int = 512
-    backbone_stride: int = 16
-    use_obj_ptrs_in_encoder: bool = True
-    max_obj_ptrs_in_encoder: int = 16
-    add_tpos_enc_to_obj_ptrs: bool = True
-    proj_tpos_enc_in_obj_ptrs: bool = True
-    use_signed_tpos_enc_to_obj_ptrs: bool = True
-    multimask_output_in_sam: bool = True
-    multimask_output_for_tracking: bool = True
-    # SAM2Train specific parameters
     prompt_type: str = "point"  # "point", "box", "mask"
     forward_backbone_per_frame_for_eval: bool = False
 
@@ -69,12 +57,20 @@ class DataConfig:
 @dataclass
 class LossConfig:
     """Configuration for loss functions."""
+    # Type of loss to use: "multi_step" (default) or "bce"
+    type: str = "multi_step"
+    # Subsample ground-truth masks along time when computing loss.
+    # If gt_stride=k, only frames [0, k, 2k, ...] contribute to the loss.
+    gt_stride: int = 1
 
+    # Weights for the original multi-step loss (kept for backward compatibility)
     bce_weight: float = 1.0
     dice_weight: float = 1.0
     iou_weight: float = 0.5
-    temporal_weight: float = 0.1
-    smooth: float = 1e-6
+
+    # BCE-only options (used when type == "bce")
+    bce_pos_weight: Optional[list] = None  # Optional per-class positive weights
+    bce_reduction: str = "mean"
 
 
 @dataclass
@@ -117,7 +113,7 @@ class TrainerConfig:
     enable_checkpointing: bool = True
     enable_progress_bar: bool = True
     logger: bool = True
-    log_every_n_steps: int = 50
+    log_every_n_steps: int = 10
 
     # Early stopping (optional)
     early_stopping_patience: Optional[int] = None
@@ -128,7 +124,7 @@ class VisualizationConfig:
     """Configuration for GIF visualization and SwanLab logging."""
 
     enabled: bool = True
-    train_every_n_steps: int = 0  # 0 disables train GIFs
+    train_every_n_steps: int = 400  # 0 disables train GIFs
     val_first_batch_every_n_epochs: int = 1  # log only first batch per epoch
     max_length: int = 4
     stride: int = 1
@@ -150,16 +146,14 @@ class Config:
 
     # Global settings
     seed: int = 42
-    use_wandb: bool = True
-    wandb_project: str = "sam2-video-training"
     log_level: str = "INFO"
-    output_dir: str = "outputs"
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dict representation for logging/checkpointing."""
         from dataclasses import asdict
+
         return asdict(self)
 
 
-cs = ConfigStore.instance()
-cs.store(name="config", node=Config)
+# Note: ConfigStore registration removed to favor Hydra `_target_` instantiation.
+# These dataclasses are retained only as documentation/types and are not registered.

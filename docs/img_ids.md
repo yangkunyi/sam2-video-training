@@ -1,25 +1,26 @@
-# `img_ids` in `core/sam2model.py`
+# `img_ids` in `sam2_video/model/sam2model.py`
 
 This note explains what `img_ids` is, how it is constructed, and how it is used during forward tracking.
 
 ## Context
 
-Code site:
+Code site (simplified path assumes `batch_size=1` and repeats current frame id across objects):
 
 ```python
-# core/sam2model.py
-img_ids = input.flat_obj_to_img_idx[frame_idx]
+# sam2_video/model/sam2model.py
+number_of_objects = len(backbone_out["obj_to_cat"]) 
+img_ids = torch.tensor([frame_idx]).repeat(number_of_objects)
 ```
 
 ## Meaning
 
 - Purpose: A per-frame mapping from "objects at this time step" to the corresponding flattened image indices.
-- Type/shape: A 1D tensor of length `O` (number of objects per frame), indexing into the flattened image batch of size `B*T`.
-- Interpretation: If multiple objects belong to the same (video, frame), their entries in `img_ids` are identical — that is expected.
+- Type/shape: A 1D tensor of length `O` (number of objects per frame). In the simplified path we use a constant `frame_idx` repeated `O` times (since `B=1`).
+- Interpretation: With `B=1`, all objects at time `t` come from the same frame; their `img_ids` equal `t`.
 
 ## Construction
 
-Defined in `core/data_utils.py` as a property of `BatchedVideoDatapoint`:
+Generalized form (for future `B>1`) exists in `core/data_utils.py` as a property of `BatchedVideoDatapoint`:
 
 ```python
 @property
@@ -45,7 +46,7 @@ Let `B=2`, `T=3`. The flattened image indices map as:
 - `(t=0, b=0) → 0`, `(1, 0) → 1`, `(2, 0) → 2`
 - `(0, 1) → 3`, `(1, 1) → 4`, `(2, 1) → 5`
 
-At `t=1`, if there are objects from both videos, `img_ids = [1, 4, ...]`. If two objects come from the same `(t=1, b=0)` frame, `img_ids` may include `[1, 1, ...]`.
+At `t=1`, if there are objects from both videos and `B>1`, `img_ids = [1, 4, ...]`. If two objects come from the same `(t=1, b=0)` frame, `img_ids` may include `[1, 1, ...]`.
 
 ## Usage in `forward_tracking`
 
@@ -60,7 +61,7 @@ current_vision_pos_embeds  = [x[:, img_ids] for x in vision_pos_embeds]
 
 This selects columns (batch dimension) corresponding to the current frame's objects, producing features with batch size `O`.
 
-2) Compute on-the-fly for the current `img_ids` (to avoid redundant backbone work):
+2) Compute on-the-fly for the current `img_ids` (to avoid redundant backbone work); in the simplified `B=1` path, `unique_img_ids` is just the scalar `t`:
 
 ```python
 unique_img_ids, inv_ids = torch.unique(img_ids, return_inverse=True)
@@ -84,4 +85,3 @@ vision_pos_embeds  = [x[:, inv_ids] for x in vision_pos_embeds]
   - `obj_to_frame_idx`: `[T, O, 2]`
   - `flat_obj_to_img_idx`: `[T, O]`
   - `img_ids` at time `t`: `[O]`
-

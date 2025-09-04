@@ -2,10 +2,9 @@
 
 ## Project Structure & Module Organization
 - `train.py`: Single entry point (Hydra + Lightning).
-- `configs/`: Hydra groups (`model/`, `data/`, `trainer/`, `optimizer/`, `scheduler/`, `swanlab/`). Default at `configs/config.yaml`.
-- `core/`: Training stack
-  - `sam2model.py` (SAM2 wrapper), `trainer.py` (Lightning modules), `dataset.py` (COCO→video), `loss.py`, `config.py`, `utils.py`, `data_utils.py`.
-- `test_dataset_refactor.py`: Dataset sanity tests.
+- `configs/`: Single flat config (`config.yaml`) and SAM2 arch YAMLs under `configs/sam2/`.
+- `sam2_video/`: Library package
+  - `config.py` (dataclasses), `model/sam2model.py` (SAM2 wrapper), `model/losses.py`, `training/trainer.py`, `data/dataset.py`, `data/data_utils.py`, `utils/` (prompts, masks, viz, model_utils, aggregator)
 - `requirements.txt`, `README.md`.
 
 ## Build, Test, and Development Commands
@@ -16,7 +15,7 @@
   - Paths: `python train.py model.checkpoint_path=/path/sam2.pt model.config_path=/path/sam2.yaml`
   - Data: `python train.py data.train_path=/data/train.json data.val_path=/data/val.json`
   - Hardware: `python train.py trainer.accelerator=gpu trainer.devices=1 trainer.precision=16-mixed`
-- Tests: `python test_dataset_refactor.py`
+  
 
 ## Coding Style & Naming Conventions
 - Python 3.10+, PEP 8, 4‑space indentation.
@@ -26,7 +25,7 @@
 
 ## Testing Guidelines
 - Add fast, deterministic tests (CPU, tiny inputs). Name files `test_*.py`.
-- Prefer synthetic COCO JSON via `tempfile` (see `test_dataset_refactor.py`).
+- Prefer synthetic COCO JSON via `tempfile` if adding tests.
 - Run tests locally with `python -m pytest` if adding pytest; otherwise run the script directly.
 
 ## Commit & Pull Request Guidelines

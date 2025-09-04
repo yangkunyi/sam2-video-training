@@ -34,8 +34,8 @@ python train.py trainer.max_epochs=100 optimizer.lr=1e-4
 # Use different dataset
 python train.py dataset=coco_val
 
-# Training without wandb
-python train.py use_wandb=false
+# Training quickstart
+python train.py
 
 # Quick test with debug logging
 python train.py trainer.max_epochs=2 trainer.limit_train_batches=5 trainer.limit_val_batches=2
@@ -61,14 +61,10 @@ python train.py trainer.limit_train_batches=0
 # Show configuration structure and overrides
 python train.py --help
 
-# Test dataset loading without training
-python test_multi_object.py
-
 # Validate specific configuration
 python train.py --config-name=config --cfg job trainer.max_epochs=1
 
-# Run single test
-python -m pytest test/ -v -k test_dataset
+# (optional) add tests under test/ and run via pytest
 ```
 
 ### Training Monitoring  
@@ -85,8 +81,7 @@ ls outputs/$(date +%Y-%m-%d)/$(ls outputs/$(date +%Y-%m-%d) | tail -1)/checkpoin
 # Monitor with TensorBoard
 tensorboard --logdir=outputs/
 
-# Access wandb logs (if enabled)
-wandb sync outputs/$(date +%Y-%m-%d)/$(ls outputs/$(date +%Y-%m-%d) | tail -1)/wandb/
+# SwanLab logs are stored in the Hydra run dir under logs/
 ```
 
 ## High-Level Architecture
@@ -96,11 +91,22 @@ wandb sync outputs/$(date +%Y-%m-%d)/$(ls outputs/$(date +%Y-%m-%d) | tail -1)/w
 sam2-video-training/
 ├── train.py               # Main training script (Hydra + Lightning)
 ├── config.py              # Dataclass configuration system
-├── core/                  # Core modules (no __init__.py files)
-│   ├── sam2.py           # SAM2 model wrapper and tracker
-│   ├── dataset.py        # Dataset implementations with prompt generation
-│   ├── trainer.py        # Lightning trainer module  
-│   └── loss.py           # Combined loss functions
+├── sam2_video/           # Library package
+│   ├── config.py         # Dataclass config system
+│   ├── model/            # Model
+│   │   ├── sam2model.py  # SAM2 model wrapper and tracker
+│   │   └── losses.py     # Combined loss functions
+│   ├── training/         # Training components
+│   │   └── trainer.py    # Lightning trainer module
+│   ├── data/             # Data components
+│   │   ├── dataset.py    # COCO→video datasets and collate
+│   │   └── data_utils.py # BatchedVideoDatapoint structures
+│   └── utils/            # Utilities
+│       ├── prompts.py    # Prompt utilities (points, boxes)
+│       ├── masks.py      # Mask utilities and merging
+│       ├── viz.py        # Visualization helpers (GIF)
+│       ├── model_utils.py# Parameter counting, trainable controls
+│       └── __init__.py   # Aggregator (re-exports)
 ├── configs/              # Hydra configuration files
 │   ├── config.yaml       # Main config with defaults
 │   ├── dataset/          # Dataset-specific configs (coco, coco_val)
@@ -152,8 +158,7 @@ Config:
 - **image_size**: `dataset.image_size` (input resolution, default 512x512)
 - **batch_size**: `dataset.batch_size` (start with 1 for memory constraints)
 - **learning_rate**: `optimizer.lr` (start with 1e-4 for memory modules)
-- **max_objects**: `model.max_objects` (simultaneous tracking limit, default 10)
-- **prompt_generation**: `dataset.number_of_points`, `dataset.include_center` (point sampling)
+- **prompt_generation**: `model.num_pos_points`, `model.include_center` (point sampling)
 
 ### Multi-Object Tracking Features
 - **Prompt Generation**: Configurable point/bbox/mask prompts from ground truth
@@ -178,14 +183,14 @@ def hydra_main(cfg: DictConfig) -> None:
 ### Component Pattern
 All components follow a clean modular design:
 ```python
-# core/sam2.py: SAM2Model wrapper with Lightning integration
-# core/dataset.py: VideoDataset, COCODataset, and PromptGenerator classes  
-# core/trainer.py: SAM2LightningModule with training/validation logic
-# core/loss.py: SAM2TrainingLoss with BCE, Dice, IoU, and temporal losses
+# sam2_video/model/sam2model.py: SAM2Model wrapper with Lightning integration
+# sam2_video/data/dataset.py: COCO->video datasets and collate  
+# sam2_video/training/trainer.py: SAM2LightningModule with training/validation logic
+# sam2_video/model/losses.py: SAM2 training losses (BCE, Dice, IoU)
 
 # Key classes:
 class SAM2Model:          # Wraps SAM2 predictor for training
-class PromptGenerator:    # Generates point/bbox/mask prompts from GT
+# prompt generation is provided as functions in core/prompts.py
 class VideoDataset:       # Loads video frames and annotations
 class COCODataset:        # COCO format with RLE mask support
 class SAM2LightningModule: # Lightning training module
@@ -203,8 +208,8 @@ class SAM2LightningModule: # Lightning training module
 ### Logging & Monitoring
 - **Hydra output management**: Automatic timestamped directories in `outputs/`
 - **loguru**: Structured logging with file output and console formatting
-- **wandb integration**: Configurable via `use_wandb` flag with automatic run tracking
-- **Lightning logging**: Built-in TensorBoard and wandb metric logging
+- **SwanLab logging**: via SwanLabLogger in `train.py`
+- **Lightning logging**: Built-in metric logging
 - **Output structure**: `outputs/YYYY-MM-DD/HH-MM-SS/` with checkpoints, logs, config
 - **Key metrics**: Combined loss, BCE loss, Dice loss, IoU loss, learning rate, validation metrics
 - **Configuration preservation**: Full config saved as `.hydra/config.yaml` in each run
@@ -212,9 +217,8 @@ class SAM2LightningModule: # Lightning training module
 ### Development Workflow
 1. **Modify configs**: Edit YAML files in `configs/` directory
 2. **Override parameters**: Use command-line overrides: `python train.py optimizer.lr=1e-4`
-3. **Test changes**: Use `test_multi_object.py` for dataset validation
-4. **Monitor training**: TensorBoard, wandb, or log files in outputs directory
-5. **Resume training**: Use `ckpt_path=path/to/checkpoint.ckpt` parameter
+3. **Monitor training**: SwanLab or log files in Hydra output directory
+4. **Resume training**: Use `ckpt_path=path/to/checkpoint.ckpt` parameter
 
 ## Architecture Notes
 
@@ -222,18 +226,16 @@ class SAM2LightningModule: # Lightning training module
 - **Hydra Configuration**: Centralized YAML-based config with command-line overrides
 - **PyTorch Lightning**: Modern training framework with automatic optimization
 - **Modular Components**: Clean separation between model, data, training, and loss
-- **No __init__.py Files**: Simplified import structure for better maintainability
-- **Multi-Object Focus**: Built specifically for video object tracking with multiple targets
+- **Simple package structure**: Minimal `__init__.py` where needed
+- **Multi-Object Focus**: Built for video object tracking with multiple targets
 
 ### Key Implementation Details
 - **Memory Module Training**: Focus on SAM2's memory attention and encoder components
 - **Prompt-Based Learning**: Ground truth masks converted to point/bbox/mask prompts
-- **Video Sequence Handling**: Configurable clip lengths with temporal consistency
+- **Video Sequence Handling**: Configurable clip lengths
 - **COCO Integration**: Native support for COCO dataset format with RLE decoding
-- **Loss Combination**: Weighted BCE, Dice, IoU, and temporal losses for comprehensive training
+- **Loss Combination**: Weighted BCE, Dice, IoU for training
 
 ### Testing & Validation
-- **Unit Tests**: Located in `test/` directory for dataset and core functionality
-- **Multi-Object Test**: `test_multi_object.py` validates dataset loading and prompt generation
-- **Integration Testing**: Lightning trainer validation loops for end-to-end testing
-- **Configuration Validation**: Hydra's built-in config validation and override system
+- **Integration Testing**: Lightning trainer validation loops for end-to-end sanity
+- **Configuration Validation**: Hydra's config validation and override system

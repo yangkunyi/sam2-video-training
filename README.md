@@ -5,7 +5,7 @@ A simplified, clean implementation for training SAM2 memory modules on video dat
 ## Features
 
 - Unified training via PyTorch Lightning
-- Clean Hydra + dataclass configs
+- Clean Hydra with `_target_` instantiation
 - Multi-object, per-category masks from COCO
 - Mixed precision, checkpoints, LR monitor
 - SwanLab visualizations (optional)
@@ -31,19 +31,26 @@ Common overrides:
 ## Project Structure
 
 - `train.py`: Single entry (Hydra + Lightning)
-- `configs/`: Hydra configs grouped by domain
-- `core/`: Training stack
-  - `sam2model.py`: SAM2 wrapper and forward
-  - `trainer.py`: Lightning modules
-  - `dataset.py`: COCO→video clips + collate
-  - `loss_fns.py`: Losses
-  - `config.py`: Dataclass configs
-  - `utils.py`: Prompts, visualization, helpers
+- `configs/`: Single flat config (`config.yaml`) plus SAM2 arch YAMLs under `configs/sam2/`
+- `sam2_video/`: Library package
+  - `config.py`: Types only (no ConfigStore)
+  - `model/sam2model.py`: SAM2 wrapper and forward
+  - `model/losses.py`: Losses
+  - `training/trainer.py`: Lightning modules
+  - `data/dataset.py`: COCO→video clips + collate
+  - `data/data_utils.py`: BatchedVideoDatapoint structures
+  - `utils/`: prompts.py, masks.py, viz.py, model_utils.py, `__init__.py` aggregator
 
 ## Configuration Notes
 
+- All configuration now lives in `configs/config.yaml` for simplicity.
 - `data.*`: set `train_path`, `val_path`, `image_size`, `video_clip_length`, `stride`, `batch_size`
-- `model.*`: provide `checkpoint_path`, `config_path`; set prompt via `prompt_type` in {point, box, mask}
+- `model.*`: Hydra target for `sam2_video.model.sam2model.SAM2Model`; provide `checkpoint_path`, `config_path`; set prompt via `model.prompt_type` in {point, box, mask}
+- `module`: Hydra target for LightningModule (`sam2_video.training.trainer.SAM2LightningModule`)
+- `data_module`: Hydra target for LightningDataModule (`sam2_video.training.trainer.SAM2LightningDataModule`)
+- `trainer`: Hydra target for `lightning.pytorch.trainer.trainer.Trainer`
+- `callbacks`: list of Hydra targets (ModelCheckpoint, LearningRateMonitor)
+- `swanlab`: Hydra target for `swanlab.integration.pytorch_lightning.SwanLabLogger`
 - `visualization.*`: enable/disable GIF logging; defaults are conservative
 
 ## Data Format
@@ -64,11 +71,16 @@ COCO-style JSON with `images`, `annotations`, `categories` and additional fields
 
 ## Loss Functions
 
-The training uses a combined loss function with configurable weights:
+The training uses a combined loss with configurable weights:
 - BCE Loss: Binary cross-entropy for mask prediction
 - Dice Loss: Spatial overlap for segmentation
-- IoU Loss: Intersection over Union loss  
-- Temporal Loss: Consistency between consecutive frames
+- IoU Loss: Intersection over Union loss
+
+Temporal subsampling for supervision is supported via `loss.gt_stride`.
+
+- Set `loss.gt_stride=k` to compute the loss only on frames `[0, k, 2k, ...]` within each clip.
+- Predictions and ground-truth are aligned on those frames only; forward still runs on all frames.
+- Example: `loss.gt_stride=4` uses the 1st, 5th, 9th frames for loss if present.
 
 ## Examples
 
@@ -85,28 +97,24 @@ python train.py data.train_path=/data/train.json data.val_path=/data/val.json \
 ## Requirements
 
 See `requirements.txt` for full dependencies. Key packages:
-- PyTorch Lightning
-- torch
-- loguru
-- PIL
-- Transformers (for some components)
-- Weights & Biases (optional)
+- PyTorch Lightning, torch, torchvision, torchmetrics
+- hydra-core, omegaconf
+- numpy, Pillow, pycocotools, imageio
+- loguru, swanlab
 
-## Migration from Old Structure
+## Migration Notes
 
-The old complex structure has been simplified:
+The configs folder was simplified to reduce subdirectories:
 
-- **Before**: Multiple entry points (`my_app.py`, `lightning_train.py`)
-- **After**: Single `train.py` with clean command line interface
+- **Before**: Many Hydra groups under `configs/{model,data,trainer,optimizer,scheduler,swanlab,module,data_module,callbacks,loss,visualization}`
+- **After**: Single `configs/config.yaml` containing all sections. SAM2 arch YAML remains at `configs/sam2/sam2.1_hiera_t.yaml`.
 
-- **Before**: Complex configuration with multiple enums and inheritance
-- **After**: Simple dataclass configuration
+Common overrides remain the same; you can now switch prompts via:
 
-- **Before**: Duplicated training code in multiple files  
-- **After**: Unified Lightning-based implementation
-
-- **Before**: Over-engineered model loading and tracking separation
-- **After**: Single unified `SAM2Model` class
+```
+python train.py model.prompt_type=mask
+python train.py model.prompt_type=box
+```
 
 ## Fail-Fast Behavior
 
@@ -114,10 +122,5 @@ The old complex structure has been simplified:
 - Dataset must include non-empty `categories` and valid `file_name` for each image.
 - Prompt generation requires non-empty masks; otherwise it raises.
 - Batch size is enforced to 1 in the collate for simpler tracking assumptions.
-
-Validate your dataset before training:
-
-python scripts/dataset_sanity_check.py /path/to/train.json --check-files
-
 
 The refactored code is approximately **70% smaller** and significantly easier to maintain and extend.

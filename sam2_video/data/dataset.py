@@ -1,17 +1,16 @@
 """
-Simplified dataset module for SAM2 video training.
-This module provides video data loading and preprocessing.
+Dataset module for SAM2 video training.
+Single-responsibility: COCO image dataset -> temporal clip dataset -> collate.
+KISS: only what is needed for the current training path.
 """
 
-import glob
 import json
-import random
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 import torch
 import numpy as np
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import torchvision.transforms as T
 from torchvision.transforms import functional as F
 
@@ -23,10 +22,8 @@ import sys
 from pycocotools import mask as mask_utils
 
 # SAM2 data structures for collate function
-from core.data_utils import BatchedVideoDatapoint, BatchedVideoMetaData
+from sam2_video.data.data_utils import BatchedVideoDatapoint, BatchedVideoMetaData
 
-# VideoDataset class removed - only COCO dataset supported
-from core.config import DataConfig
 
 
 class COCOImageDataset(Dataset):
@@ -35,7 +32,7 @@ class COCOImageDataset(Dataset):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def __init__(
         self,
-        config: "DataConfig",
+        config: Any,
         json_path: Optional[str] = None,
     ):
         """
@@ -46,7 +43,6 @@ class COCOImageDataset(Dataset):
         """
         self.config = config
         # Resolve annotation path (explicit override wins; otherwise use train_path)
-        # Fail-fast: explicit path required; if not provided use config.train_path directly
         self.coco_json_path = Path(json_path or config.train_path)
         self.image_size = config.image_size
 
@@ -120,9 +116,6 @@ class COCOImageDataset(Dataset):
 
         Args:
             rle_data: RLE encoded mask data
-            height: Height of the mask
-            width: Width of the mask
-
         Returns:
             np.ndarray: Decoded binary mask
         """
@@ -197,7 +190,7 @@ class COCOImageDataset(Dataset):
         img_info = self.images[idx]
 
         # Load image (require COCO-standard 'file_name'; fail-fast if absent)
-        image_path = img_info["file_name"]
+        image_path = img_info["path"]
         image = Image.open(image_path).convert("RGB")
         image_tensor = self.transform(image)
 
@@ -218,7 +211,7 @@ class VideoDataset(Dataset):
     def __init__(
         self,
         image_dataset: COCOImageDataset,
-        config: "DataConfig",
+        config: Any,
     ):
         """
         Initialize video dataset.
@@ -266,10 +259,6 @@ class VideoDataset(Dataset):
 
                 clip_start += self.stride
 
-    def _find_image_index_by_id(self, image_id: int) -> int:
-        """Direct lookup; raises KeyError if not found (fail-fast)."""
-        return self.image_dataset.image_id_to_idx[image_id]
-
     def __len__(self):
         return len(self.clip_indices)
 
@@ -303,7 +292,7 @@ class COCODataset(Dataset):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def __init__(
         self,
-        config: "DataConfig",
+        config: Any,
         coco_json_path: Optional[str] = None,  # Override for train/val
     ):
         """
@@ -340,8 +329,8 @@ class COCODataset(Dataset):
 
 def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDatapoint:
     """
-    极简版本：保留所有 mask（含全零），不做非空过滤，也不做 padding。
-    输入 masks 形状必须一致：每帧每物体都存在，且顺序固定。
+    Minimal collate: keep all category masks (including all-zero), no filtering/padding.
+    Assumes consistent shapes across samples and batch_size=1 for tracking simplicity.
     """
     # 1. 拼图像 [T, B, C, H, W]
     images = torch.stack([s["images"] for s in batch_list]).permute(1, 0, 2, 3, 4)
