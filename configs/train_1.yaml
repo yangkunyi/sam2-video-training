@@ -9,12 +9,16 @@ model:
   
 
 trainer:
-  val_check_interval: 0.2
+  max_epochs: 20
+  val_check_interval: 0.25
   log_every_n_steps: 50
   gradient_clip_val: 0.1
+  accumulate_grad_batches: 32
+  precision: 16
+
 
 optimizer:
-  lr: 1e-4
+  lr: 1e-5
 
 visualization:
   train_every_n_steps: 500
@@ -25,5 +29,9 @@ data:
 
 loss:
   type: bce
-  T_max: null
 
++callbacks:
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/total_loss"
+    patience: 10
+    mode: min

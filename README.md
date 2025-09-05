@@ -52,6 +52,22 @@ Common overrides:
 - `callbacks`: list of Hydra targets (ModelCheckpoint, LearningRateMonitor)
 - `visualization.*`: enable/disable GIF logging; defaults are conservative
 
+### Learning Rate Schedule
+
+- Scheduler is fixed to cosine decay with linear warmup using `transformers.get_cosine_schedule_with_warmup`.
+- Step-based only; `num_training_steps` is derived from Lightning's `trainer.estimated_stepping_batches`.
+- Config keys under `scheduler`:
+  - `enabled`: turn scheduling on/off (default: true)
+  - `warmup_steps`: linear warmup steps before cosine decay (default: 500)
+  - `num_cycles`: cosine cycles over training (default: 0.5)
+
+Examples:
+
+```
+python train.py scheduler.warmup_steps=1000
+python train.py trainer.max_epochs=20 data.batch_size=2
+```
+
 ## Data Format
 
 COCO-style JSON with `images`, `annotations`, `categories` and additional fields:

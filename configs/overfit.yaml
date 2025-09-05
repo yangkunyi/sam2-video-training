@@ -8,16 +8,23 @@ model:
   
 
 trainer:
-  limit_train_batches: 2
+  max_epochs: 50
+  limit_train_batches: 1
   limit_val_batches: 1
   val_check_interval: null
   num_sanity_val_steps: 1
+  detect_anomaly: false
   log_every_n_steps: 1
-  gradient_clip_val: 0.1
-  detect_anomaly: true
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  precision: 16
+
+scheduler:
+  enabled: false
+  warmup_enabled: false
 
 optimizer:
-  lr: 1e-4
+  lr: 5e-5
 
 visualization:
   train_every_n_steps: 1
