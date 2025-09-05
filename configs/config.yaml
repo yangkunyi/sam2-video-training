@@ -104,14 +104,7 @@ trainer:
   log_every_n_steps: 20
 
 
-# SwanLab logger configuration
-swanlab:
-  _target_: swanlab.integration.pytorch_lightning.SwanLabLogger
-  project: sam2-video-training
-  # The following are provided at runtime from train.py:
-  # experiment_name, description, config, logdir
-
-# Optional Weights & Biases logger
+# Weights & Biases logger
 wandb:
   _target_: lightning.pytorch.loggers.wandb.WandbLogger
   project: sam2-video-training
@@ -138,7 +131,7 @@ callbacks:
 
   - _target_: lightning.pytorch.callbacks.EarlyStopping
     monitor: "val/total_loss"
-    patience: 5
+    patience: 10
     mode: min
 
 # Visualization controls
@@ -146,7 +139,7 @@ visualization:
   # Conservative defaults to minimize training overhead
   enabled: true
   train_every_n_steps: 20  # Disabled by default
-  val_first_batch_every_n_epochs: 1
+  val_first_batch_every_n_epochs: 0
   max_length: 4
   stride: 1
   caption: "cholecseg8k"

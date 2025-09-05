@@ -31,12 +31,6 @@ class ModelConfig:
     include_center: bool = True  # Whether to include center point
 
 
-@dataclass
-class SwanLabConfig:
-    """Configuration for SwanLab logging."""
-
-    project: str = "sam2-video-training"
-
 
 @dataclass
 class DataConfig:
@@ -121,7 +115,7 @@ class TrainerConfig:
 
 @dataclass
 class VisualizationConfig:
-    """Configuration for GIF visualization and SwanLab logging."""
+    """Configuration for GIF visualization and logging (W&B)."""
 
     enabled: bool = True
     train_every_n_steps: int = 400  # 0 disables train GIFs
@@ -141,7 +135,6 @@ class Config:
     optimizer: OptimizerConfig
     scheduler: SchedulerConfig
     trainer: TrainerConfig
-    swanlab: SwanLabConfig
     visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
 
     # Global settings

@@ -253,7 +253,7 @@ def create_visualization_gif(
     obj_to_cat: List[int],
     max_length: int = 4,
     stride: int = 1,
-) -> str:
+) -> np.ndarray:
     """Create visualization GIF and return path to GIF file in /tmp."""
 
     # Create list to store frames for GIF
@@ -305,6 +305,9 @@ def create_visualization_gif(
 
         # Add frame to GIF list
         gif_frames.append(composite)
+
+    gif_np = np.stack(gif_frames, axis=0).transpose(0, 3, 1, 2)
+    return gif_np
 
     # Create GIF from frames
     if gif_frames:

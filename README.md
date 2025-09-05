@@ -8,7 +8,7 @@ A simplified, clean implementation for training SAM2 memory modules on video dat
 - Clean Hydra with `_target_` instantiation
 - Multi-object, per-category masks from COCO
 - Mixed precision, checkpoints, LR monitor
-- SwanLab visualizations (optional)
+- Weights & Biases logging (videos, metrics)
 
 ## Quick Start
 
@@ -50,7 +50,6 @@ Common overrides:
 - `data_module`: Hydra target for LightningDataModule (`sam2_video.training.trainer.SAM2LightningDataModule`)
 - `trainer`: Hydra target for `lightning.pytorch.trainer.trainer.Trainer`
 - `callbacks`: list of Hydra targets (ModelCheckpoint, LearningRateMonitor)
-- `swanlab`: Hydra target for `swanlab.integration.pytorch_lightning.SwanLabLogger`
 - `visualization.*`: enable/disable GIF logging; defaults are conservative
 
 ## Data Format
@@ -100,13 +99,13 @@ See `requirements.txt` for full dependencies. Key packages:
 - PyTorch Lightning, torch, torchvision, torchmetrics
 - hydra-core, omegaconf
 - numpy, Pillow, pycocotools, imageio
-- loguru, swanlab
+- loguru, wandb
 
 ## Migration Notes
 
 The configs folder was simplified to reduce subdirectories:
 
-- **Before**: Many Hydra groups under `configs/{model,data,trainer,optimizer,scheduler,swanlab,module,data_module,callbacks,loss,visualization}`
+- **Before**: Many Hydra groups under `configs/{model,data,trainer,optimizer,scheduler,module,data_module,callbacks,loss,visualization}`
 - **After**: Single `configs/config.yaml` containing all sections. SAM2 arch YAML remains at `configs/sam2/sam2.1_hiera_t.yaml`.
 
 Common overrides remain the same; you can now switch prompts via:

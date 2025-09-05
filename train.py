@@ -14,7 +14,6 @@ from lightning.pytorch.callbacks import EarlyStopping
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 import torch
-# SwanLab logger is instantiated via Hydra target defined in configs
 
 from hydra.core.global_hydra import GlobalHydra
 
@@ -37,24 +36,12 @@ def main(cfg: DictConfig) -> None:
         level=log_level,
     )
     logger.add(OUTPUT_DIR / "training.log", rotation="10 MB", retention="10 days")
-    # Instantiate loggers based on config
+    # Instantiate logger (W&B only)
     exp_name = (
         f"sam2-video-{cfg.model.trainable_modules}-gt_stride_{cfg.loss.gt_stride}"
     )
 
-    # SwanLab (optional)
-    if getattr(cfg.swanlab, "enabled", True):
-        logger.info(f"Initializing SwanLab logger for project: {cfg.swanlab.project}")
-        swanlab_logger = instantiate(
-            cfg.swanlab,
-            experiment_name=exp_name,
-            description="SAM2 Video Training with Multiple Prompts",
-            logdir=os.path.join(str(OUTPUT_DIR), "logs"),
-        )
-    
-    logger.info("SwanLab logger disabled via config.swanlab.enabled=false")
-
-# Weights & Biases (optional)
+    # Weights & Biases
     logger.info(f"Initializing W&B logger for project: {cfg.wandb.project}")
     wandb_logger = instantiate(
         cfg.wandb,
@@ -96,10 +83,6 @@ def main(cfg: DictConfig) -> None:
     # =====================================
     # Instantiate callbacks list defined in config
     callbacks = [instantiate(cb) for cb in cfg.callbacks]
-
-    # =====================================
-    # SECTION 6: LOGGER SETUP
-    # =====================================
 
     # =====================================
     # SECTION 7: TRAINER CREATION & EXECUTION
