@@ -1,0 +1,12 @@
+Give me a plan. now i add two more files in the eval dir, they▌are sam2_video/eval/inference.py and sam2_video/eval/eval.py,
+please fully understand the funtion with the same name with the
+files, know about the meaning of the parameters. After i finish
+the training process in train.py , i need to use these two
+functions to calculate the evaluation metric. The process will be
+like followin: 1. use the modelCheckpoint.best_model_path, to get
+the best mode (the SAM2Base)'s state dict, then load the  state
+dict into the sam2 video predictor. Then do the inference to get
+the predict.json. Afte that, call the eval function to get the
+eval.pkl, then aggregate the results from the eval.pkl and save
+the final metrics with wandb. Please integrate the above pipeline within the train.py and add the corresponding config into the hydra config system. Give me a plan as start.
+ultrathink.
