@@ -57,7 +57,7 @@ class SAM2LightningModule(L.LightningModule):
         # MODIFIED: 直接调用 save_hyperparameters()，它会自动捕获所有 __init__ 的参数
         # 这会自动创建 self.hparams.model, self.hparams.loss, self.hparams.optimizer 等
         self.save_hyperparameters()
-    
+
         # Initialize model
         self.model = None
 
@@ -187,8 +187,7 @@ class SAM2LightningModule(L.LightningModule):
         outs_sub = [outs_per_frame[i] for i in idxs]
         targets_sub = target_masks[idxs]
         return outs_sub, targets_sub
-    
-    
+
     @logger.catch(onerror=lambda _: sys.exit(1))
     def _should_log_gif(self, split: str, batch_idx: int) -> bool:
         """Check if GIF should be logged for current step/epoch."""
@@ -197,8 +196,9 @@ class SAM2LightningModule(L.LightningModule):
             return False
 
         if split == "train":
+            total_steps = self.trainer.fit_loop.epoch_loop.batch_progress.total.ready
             steps = self.hparams.visualization.train_every_n_steps
-            return steps > 0 and self.global_step % steps == 0
+            return steps > 0 and total_steps % steps == 0
         elif split == "val":
             epochs = self.hparams.visualization.val_first_batch_every_n_epochs
             if epochs == 0:

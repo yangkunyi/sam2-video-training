@@ -1,0 +1,44 @@
+# combo_stride.yaml
+program: train.py
+method: grid
+metric:
+  name: val/total_loss
+  goal: minimize
+parameters:
+  loss.gt_stride:
+    values: [1, 4, 8]
+  +combo:
+    values:
+      - "cholecseg8k/1"
+      - "cholecseg8k/1_sfx"
+      - "cholecseg8k/1_mem_sfx"
+      - "cholecseg8k/2_mem"
+      - "cholecseg8k/2_sfx"
+      - "cholecseg8k/2_mem_sfx"
+      - "cholecseg8k/3_mem"
+      - "cholecseg8k/3_sfx"
+      - "cholecseg8k/3_mem_sfx"
+      - "cholecseg8k/4_mem"
+      - "cholecseg8k/4_sfx"
+      - "cholecseg8k/4_mem_sfx"
+      - "cholecseg8k/5_mem"
+      - "cholecseg8k/5_sfx"
+      - "cholecseg8k/5_mem_sfx"
+      - "cholecseg8k/6_mem"
+      - "cholecseg8k/6_sfx"
+      - "cholecseg8k/6_mem_sfx"
+      - "cholecseg8k/7_sfx"
+      - "cholecseg8k/7_mem_sfx"
+      - "cholecseg8k/8_mem"
+      - "cholecseg8k/8_sfx"
+      - "cholecseg8k/8_mem_sfx"
+      - "cholecseg8k/9_mem"
+      - "cholecseg8k/9_sfx"
+      - "cholecseg8k/9_mem_sfx"
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args_no_hyphens}
+

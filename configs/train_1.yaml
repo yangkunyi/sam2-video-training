@@ -21,7 +21,7 @@ optimizer:
   lr: 1e-4
 
 visualization:
-  train_every_n_steps: 500
+  train_every_n_steps: 200
 
 data:
   video_clip_length: 8

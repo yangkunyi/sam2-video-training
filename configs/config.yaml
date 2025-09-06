@@ -29,6 +29,8 @@ model:
   checkpoint_path: /bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/checkpoints/sam2.1_hiera_tiny.pt
   # Resolve relative to original working directory so Hydra's output dir change doesn't break paths
   config_path: sam2/sam2.1_hiera_t.yaml
+  # Optional fine-tuned weights path (see eval_list.md for examples)
+  fintuned_model_path: null
 
   # Trainable modules
   trainable_modules:
@@ -47,11 +49,6 @@ model:
   num_pos_points: 2
   num_neg_points: 0
   include_center: true
-
-# Data configuration (COCO-style)
-# Defaults come from a dataset config in configs/data/* and can be overridden per-run.
-# Keep this node present for clarity; values are provided by the selected dataset config.
-data: {}
 
 # Loss weights
 loss:

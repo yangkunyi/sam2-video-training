@@ -6,6 +6,8 @@ maintainability.
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from collections import OrderedDict
+import os
 import torch
 import torch.nn as nn
 from loguru import logger
@@ -39,6 +41,7 @@ class SAM2Model(SAM2Base):
         self,
         checkpoint_path: str,
         config_path: str,
+        fintuned_model_path: Optional[str] = None,
         trainable_modules: Optional[List[str]] = None,
         device: str = "cuda",
         image_size: int = 512,
@@ -67,6 +70,7 @@ class SAM2Model(SAM2Base):
         self.num_pos_points = num_pos_points
         self.num_neg_points = num_neg_points
         self.include_center = include_center
+        self.fintuned_model_path = fintuned_model_path
 
         # 3. 先构建一个完整的 SAM2 模型
         # Resolve config path relative to repository if needed
@@ -93,6 +97,26 @@ class SAM2Model(SAM2Base):
             ]:
                 continue
             setattr(self, attr_name, getattr(sam2_model, attr_name))
+
+        # Optionally load fine-tuned weights before setting up trainable modules
+        # Follows the prescribed loading behavior.
+        if self.fintuned_model_path is not None:
+            if self.fintuned_model_path.count("all") > 0:
+                state_dict = torch.load(self.fintuned_model_path)
+                logger.warning(f"type(state_dict): {type(state_dict)}")
+                if not isinstance(state_dict, OrderedDict):
+                    self.load_state_dict(state_dict.state_dict())
+                else:
+                    self.load_state_dict(state_dict)
+            else:
+                self.sam_mask_decoder.load_state_dict(
+                    torch.load(self.fintuned_model_path)
+                )
+                pe_path = self.fintuned_model_path.replace(
+                    ".torch", "_prompt_encoder.torch"
+                )
+                if os.path.exists(pe_path):
+                    self.sam_prompt_encoder.load_state_dict(torch.load(pe_path))
 
         # 6. 按需冻结权重
         trainable_modules = trainable_modules or [
