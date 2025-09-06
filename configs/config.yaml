@@ -81,7 +81,7 @@ scheduler:
   # Warmup configuration
   warmup_enabled: true
   warmup_epochs: 5
-  warmup_start_lr: 1e-7
+  warmup_start_lr: 1e-8
 
 # Trainer configuration
 trainer:

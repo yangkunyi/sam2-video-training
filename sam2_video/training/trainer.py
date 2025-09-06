@@ -131,7 +131,7 @@ class SAM2LightningModule(L.LightningModule):
                 getattr(self.trainer, "estimated_stepping_batches", 0) or 0
             )
             total_steps = max(1, total_steps)
-            warmup_steps = int(getattr(self.hparams.scheduler, "warmup_steps", 0) or 0)
+            warmup_steps = 30
             if warmup_steps >= total_steps:
                 warmup_steps = max(0, total_steps - 1)
 

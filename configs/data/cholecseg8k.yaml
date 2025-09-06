@@ -13,7 +13,7 @@ video_clip_length: 8
 stride: 8
 
 # Loader & label space
-num_workers: 4
+num_workers: 2
 batch_size: 1
 num_categories: 13
 

@@ -8,7 +8,7 @@ import torch
 import cv2
 import imageio
 from loguru import logger
-
+import sys
 
 @logger.catch(onerror=lambda _: sys.exit(1))
 def create_composite_visualization(

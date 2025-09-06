@@ -52,6 +52,7 @@ def main(cfg: DictConfig) -> None:
         cfg.wandb,
         name=exp_name,
     )
+
     wandb_logger.experiment.config.update(
         OmegaConf.to_container(cfg, resolve=True), allow_val_change=True
     )
