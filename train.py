@@ -65,7 +65,7 @@ def main(cfg: DictConfig) -> None:
     L.seed_everything(cfg.seed)
 
     logger.info("Starting SAM2 training...")
-    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg, resolve=True)}")
 
     # =====================================
     # SECTION 3: DIRECTORY & CONFIG SETUP

@@ -102,21 +102,22 @@ class SAM2Model(SAM2Base):
         # Follows the prescribed loading behavior.
         if self.fintuned_model_path is not None:
             if self.fintuned_model_path.count("all") > 0:
-                state_dict = torch.load(self.fintuned_model_path)
+                state_dict = torch.load(self.fintuned_model_path, weights_only=False)
                 logger.warning(f"type(state_dict): {type(state_dict)}")
                 if not isinstance(state_dict, OrderedDict):
-                    self.load_state_dict(state_dict.state_dict())
+                    self.load_state_dict(state_dict.state_dict(), strict=False)
                 else:
-                    self.load_state_dict(state_dict)
+                    self.load_state_dict(state_dict, strict=False)
             else:
                 self.sam_mask_decoder.load_state_dict(
-                    torch.load(self.fintuned_model_path)
+                    torch.load(self.fintuned_model_path),
+                    strict=False
                 )
                 pe_path = self.fintuned_model_path.replace(
                     ".torch", "_prompt_encoder.torch"
                 )
                 if os.path.exists(pe_path):
-                    self.sam_prompt_encoder.load_state_dict(torch.load(pe_path))
+                    self.sam_prompt_encoder.load_state_dict(torch.load(pe_path), strict=False)
 
         # 6. 按需冻结权重
         trainable_modules = trainable_modules or [
