@@ -1,0 +1,9 @@
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_point/cholecseg8k_point_48.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_point_all/cholecseg8k_point_all_18.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_point_pe/cholecseg8k_point_pe_10.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_bbox/cholecseg8k_bbox_9.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_bbox_pe/cholecseg8k_bbox_pe_15.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_bbox_all/cholecseg8k_bbox_all_8.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_mask/cholecseg8k_mask_3.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_mask_pe/cholecseg8k_mask_pe_1.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_mask_all/cholecseg8k_mask_all_0.torch

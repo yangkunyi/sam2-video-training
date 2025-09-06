@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import pickle
 import random
 import tempfile
@@ -14,8 +15,8 @@ from pycocotools import mask as maskUtils
 from pycocotools.coco import COCO
 from sam2.build_sam import build_sam2_video_predictor
 
-from PromptObjNoiseAdder import PromptObjNoiseAdder
-from utils import (
+from .PromptObjNoiseAdder import PromptObjNoiseAdder
+from .utils import (
     ClipRange,
     PromptInfo,
     PromptObj,
@@ -24,8 +25,6 @@ from utils import (
     mask_to_points,
     init_grid,
 )
-
-logger.add("dense_points/log.log")
 
 # ic.disable()
 # Enable autocast for mixed precision on CUDA devices
@@ -37,10 +36,8 @@ if torch.cuda.get_device_properties(0).major >= 8:
     torch.backends.cudnn.allow_tf32 = True
 
 
-# Path to the SAM2 checkpoint and model configuration
-sam2_checkpoint = (
-    "/bd_byta6000i0/users/sam2/kyyang/SurgicalSAM2/checkpoints/sam2_hiera_tiny.pt"
-)
+# Path to the SAM2 checkpoint and model configuration (overridable at runtime)
+sam2_checkpoint = "/bd_byta6000i0/users/sam2/kyyang/SurgicalSAM2/checkpoints/sam2_hiera_tiny.pt"
 model_cfg = "sam2_hiera_t.yaml"
 
 ######################
@@ -51,7 +48,8 @@ model_cfg = "sam2_hiera_t.yaml"
 
 
 PROMPT_INFO = []
-OUTPUT_PATH = None
+OUTPUT_PATH = None  # Will be set to EVAL_DIR for writing outputs
+EVAL_DIR = None
 VIDEO_ID_SET = set()
 COCO_INFO = None
 OBJ_COUNT = 0
@@ -61,6 +59,7 @@ NUM_POINTS = 0
 NOISE_ADDER = None
 NUM_NEG_POINTS = 0
 INCLUDE_CENTER = True
+FINETUNED_STATE_DICT = None
 
 
 ########################
@@ -124,6 +123,19 @@ def get_imgs(coco_info):
 #
 ################################################################################
 
+
+def _load_finetuned_weights_into_predictor(predictor, state_dict) -> None:
+    """Load provided fine-tuned weights into predictor's underlying model.
+
+    Fast-fail: requires a `model` attribute and strict key/shape match.
+    """
+    if predictor is None:
+        raise ValueError("predictor is None; cannot load fine-tuned weights")
+    if state_dict is None:
+        raise ValueError("state_dict is None; cannot load fine-tuned weights")
+
+    # Fast-fail strict load — ensures no missing/unexpected keys
+    predictor.load_state_dict(state_dict, strict=True)
 
 def find_prompt_frame(frames, clip_range: ClipRange):
     """
@@ -338,6 +350,7 @@ def get_obj_from_masks(video_segment):
     return objs
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def add_prompt(
     prompt_objs: List[PromptObj],
     predictor,
@@ -393,6 +406,7 @@ def add_prompt(
     return predictor, inference_state, out_obj_ids, out_mask_logits
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def predict_on_video(predictor, inference_state, start_idx):
     """
     Predict segmentation masks for the video.
@@ -447,6 +461,7 @@ def save_prompt_frame(
     PROMPT_INFO.extend(clip_prompts)
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def process_video_clip(frames, clip_prompts: List[PromptInfo], clip_range: ClipRange):
     """
     Process a video clip.
@@ -465,6 +480,8 @@ def process_video_clip(frames, clip_prompts: List[PromptInfo], clip_range: ClipR
     video_dir = create_symbol_link_for_video(frames[start_idx : end_idx + 1])
 
     predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+    if FINETUNED_STATE_DICT is not None:
+        _load_finetuned_weights_into_predictor(predictor, FINETUNED_STATE_DICT)
     inference_state = predictor.init_state(video_path=video_dir)
 
     for prompt_info in clip_prompts:
@@ -677,6 +694,7 @@ def merge_prompts(prompts_by_categories, prompts_by_clip_length):
     return merged_prompts
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def process_singel_video(
     frames, prompt_type, clip_length: int = None, variable_cats: bool = False
 ):
@@ -717,6 +735,7 @@ def process_singel_video(
     return video_segments
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def process_all_videos(prompt_type, clip_length, variable_cats):
     """
     Process all videos.
@@ -744,7 +763,8 @@ def process_all_videos(prompt_type, clip_length, variable_cats):
     return all_video_segments
 
 
-def save_as_coco_format(all_video_segments, save_video_list):
+@logger.catch(onerror=lambda _: sys.exit(1))
+def save_as_coco_format(all_video_segments, save_video_list=None):
     """
     Save the results in COCO format.
 
@@ -804,8 +824,9 @@ def save_as_coco_format(all_video_segments, save_video_list):
 
     predict_data = coco_annotations
 
-    predict_path = os.path.join(OUTPUT_PATH, "predict.json")
-    prompt_path = os.path.join(OUTPUT_PATH, "prompt.pkl")
+    # Persist outputs under the run's eval directory
+    predict_path = os.path.join(EVAL_DIR, "predict.json")
+    prompt_path = os.path.join(EVAL_DIR, "prompt.pkl")
 
     with open(predict_path, "w") as f:
         json.dump(predict_data, f, indent=4)
@@ -816,6 +837,7 @@ def save_as_coco_format(all_video_segments, save_video_list):
     return predict_path, prompt_path
 
 
+@logger.catch(onerror=lambda _: sys.exit(1))
 def inference(
     coco_path,
     output_path,
@@ -830,6 +852,11 @@ def inference(
     bbox_noise_type="shift_scale",
     num_neg_points=0,
     grid_spaceing=None,
+    *,
+    run_dir: str,
+    model_cfg_override: str | None = None,
+    sam2_checkpoint_override: str | None = None,
+    finetuned_state_dict: dict | None = None,
 ):
     """
     Perform inference on COCO dataset.
@@ -853,10 +880,64 @@ def inference(
         NUM_POINTS, \
         NOISE_ADDER, \
         NUM_NEG_POINTS, \
-        INCLUDE_CENTER
+        INCLUDE_CENTER, \
+        EVAL_DIR, \
+        FINETUNED_STATE_DICT
 
     logger.info("Starting inference with parameters:")
-    logger.info("\n" + pformat(locals(), indent=4, sort_dicts=False))
+    params_for_log = {
+        "coco_path": coco_path,
+        "output_path": output_path,
+        "prompt_type": prompt_type,
+        "save_video_list": save_video_list,
+        "clip_length": clip_length,
+        "variable_cats": variable_cats,
+        "num_points": num_points,
+        "include_center": include_center,
+        "noised_prompt": noised_prompt,
+        "noise_intensity": noise_intensity,
+        "bbox_noise_type": bbox_noise_type,
+        "num_neg_points": num_neg_points,
+        "grid_spaceing": grid_spaceing,
+        "run_dir": str(run_dir),
+        "model_cfg_override": model_cfg_override,
+        "sam2_checkpoint_override": sam2_checkpoint_override,
+        # intentionally omit finetuned_state_dict to avoid huge/secret logs
+    }
+    logger.info("\n" + pformat(params_for_log, indent=4, sort_dicts=False))
+
+    # Basic validation
+    if run_dir is None or str(run_dir).strip() == "":
+        raise ValueError("inference(): run_dir must be provided and non-empty")
+
+    # Update globals for this call only (restore later)
+    prev_model_cfg = globals().get("model_cfg")
+    prev_sam2_ckpt = globals().get("sam2_checkpoint")
+
+    if model_cfg_override is not None:
+        globals()["model_cfg"] = model_cfg_override
+    if sam2_checkpoint_override is not None:
+        globals()["sam2_checkpoint"] = sam2_checkpoint_override
+
+    FINETUNED_STATE_DICT = finetuned_state_dict
+
+    # Normalize prompt type for runtime (train: point|box|mask → infer: points|bbox|mask)
+    normalized_prompt = {
+        "point": "points",
+        "box": "bbox",
+        "mask": "mask",
+        "points": "points",
+        "bbox": "bbox",
+    }.get(prompt_type, prompt_type)
+
+    # Initialize eval directory and logging
+    EVAL_DIR = os.path.join(str(run_dir), "eval")
+    os.makedirs(EVAL_DIR, exist_ok=True)
+    try:
+        logger.add(os.path.join(EVAL_DIR, "log.log"))
+    except Exception:
+        # If logger already configured, ignore adding sink errors
+        pass
 
     NUM_NEG_POINTS = num_neg_points
     NUM_POINTS = num_points
@@ -865,9 +946,8 @@ def inference(
     if NOISED_PROMPT:
         NOISE_ADDER = PromptObjNoiseAdder(bbox_noise_type, noise_intensity)
 
-    OUTPUT_PATH = os.path.join("dense_points", prompt_type, output_path)
-    # OUTPUT_PATH = os.path.join(output_path, prompt_type)
-    os.makedirs(OUTPUT_PATH, exist_ok=True)
+    # Maintain compatibility: set OUTPUT_PATH but write under EVAL_DIR
+    OUTPUT_PATH = EVAL_DIR
 
     COCO_INFO = COCO(coco_path)
     MOD = max(COCO_INFO.getCatIds()) + 1
@@ -881,10 +961,18 @@ def inference(
     for img in imgs:
         VIDEO_ID_SET.add(img["video_id"])
 
-    all_videos_segments = process_all_videos(prompt_type, clip_length, variable_cats)
+    all_videos_segments = process_all_videos(
+        normalized_prompt, clip_length, variable_cats
+    )
     predict_path, prompt_path = save_as_coco_format(
         all_videos_segments, save_video_list
     )
+
+    # Restore previous global config paths to avoid leaking overrides
+    if prev_model_cfg is not None:
+        globals()["model_cfg"] = prev_model_cfg
+    if prev_sam2_ckpt is not None:
+        globals()["sam2_checkpoint"] = prev_sam2_ckpt
 
     return predict_path, prompt_path
 
@@ -903,4 +991,5 @@ if __name__ == "__main__":
         grid_spaceing=None,
         num_points=int(1),
         num_neg_points=0,
+        run_dir="./_debug_eval",
     )
