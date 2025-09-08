@@ -9,7 +9,7 @@ model:
   
 
 trainer:
-  max_epochs: 10
+  max_epochs: 20
   val_check_interval: 0.25
   log_every_n_steps: 1
   gradient_clip_val: 0.1
@@ -18,7 +18,7 @@ trainer:
 
 
 optimizer:
-  lr: 1e-5
+  lr: 1e-6
 
 visualization:
   train_every_n_steps: 200

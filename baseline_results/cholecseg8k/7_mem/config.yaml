@@ -1,0 +1,20 @@
+data:
+  name: cholecseg8k
+  train_path: /bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_train.json
+  val_path: /bd_byta6000i0/users/surgicaldinov2/kyyang/sam2/cholecseg8k/coco_style/merged_gt_coco_annotations_test.json
+  image_size: 512
+  video_clip_length: 8
+  stride: 8
+  num_workers: 2
+  batch_size: 1
+  num_categories: 13
+defaults:
+- /data/cholecseg8k@data
+model:
+  fintuned_model_path: /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_mask/cholecseg8k_mask_3.torch
+  trainable_modules:
+  - memory_encoder
+  - memory_attention
+  prompt_type: mask
+data_module:
+  data: ${data}

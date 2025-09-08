@@ -41,16 +41,25 @@ def main(cfg: DictConfig) -> None:
         level=log_level,
     )
     logger.add(OUTPUT_DIR / "training.log", rotation="10 MB", retention="10 days")
-    # Instantiate logger (W&B only)
-    exp_name = (
-        f"sam2-video-{cfg.model.trainable_modules}-gt_stride_{cfg.loss.gt_stride}"
-    )
+    # Extract combo name and number from config
+    # Create tags for wandb
+    tags = [
+        cfg.model.prompt_type,
+        cfg.data.name,
+        "_".join(cfg.model.trainable_modules)
+        if hasattr(cfg.model, "trainable_modules")
+        else "unknown",
+        f"stride{cfg.loss.gt_stride}",
+    ]
+
+    exp_name = "-".join(tags)
 
     # Weights & Biases
     logger.info(f"Initializing W&B logger for project: {cfg.wandb.project}")
     wandb_logger = instantiate(
         cfg.wandb,
         name=exp_name,
+        tags=tags,
     )
 
     wandb_logger.experiment.config.update(

@@ -37,7 +37,9 @@ if torch.cuda.get_device_properties(0).major >= 8:
 
 
 # Path to the SAM2 checkpoint and model configuration (overridable at runtime)
-sam2_checkpoint = "/bd_byta6000i0/users/sam2/kyyang/SurgicalSAM2/checkpoints/sam2_hiera_tiny.pt"
+sam2_checkpoint = (
+    "/bd_byta6000i0/users/sam2/kyyang/SurgicalSAM2/checkpoints/sam2_hiera_tiny.pt"
+)
 model_cfg = "sam2_hiera_t.yaml"
 
 ######################
@@ -133,9 +135,14 @@ def _load_finetuned_weights_into_predictor(predictor, state_dict) -> None:
         raise ValueError("predictor is None; cannot load fine-tuned weights")
     if state_dict is None:
         raise ValueError("state_dict is None; cannot load fine-tuned weights")
-
+    if isinstance(state_dict, tuple):
+        predictor.sam_mask_decoder.load_state_dict(state_dict[0], strict=True)
+        if state_dict[1] is not None:
+            predictor.sam_prompt_encoder.load_state_dict(state_dict[1], strict=True)
     # Fast-fail strict load — ensures no missing/unexpected keys
-    predictor.load_state_dict(state_dict, strict=True)
+    else:
+        predictor.load_state_dict(state_dict, strict=False)
+
 
 def find_prompt_frame(frames, clip_range: ClipRange):
     """
@@ -758,7 +765,7 @@ def process_all_videos(prompt_type, clip_length, variable_cats):
         all_video_segments[video_id] = video_segments
         torch.cuda.empty_cache()
         free_memory, total_memory = torch.cuda.mem_get_info()
-        logger.info(f"free memory: {free_memory/1024**3:.2f} GB\n")
+        logger.info(f"free memory: {free_memory / 1024**3:.2f} GB\n")
 
     return all_video_segments
 

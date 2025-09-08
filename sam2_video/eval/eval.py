@@ -1,5 +1,6 @@
 import pickle
 
+import cv2
 import numpy as np
 from icecream import ic
 from pycocotools.coco import COCO
@@ -66,7 +67,8 @@ def get_image_scores(cocoDT, cocoGT):
         all_iou = {cat_id: [] for cat_id in CAT_IDS}
         all_mae = {cat_id: [] for cat_id in CAT_IDS}
         all_dice = {cat_id: [] for cat_id in CAT_IDS}
-
+        if img["order_in_video"] == 20 and img["video_id"] == "10_":
+            pass
         img_score = {
             "video_id": img["video_id"],
             "order_in_video": img["order_in_video"],
@@ -256,7 +258,7 @@ def get_result(video_scores):
     return result
 
 
-def eval(predict_path, coco_path, output_path):
+def eval(predict_path, coco_path, output_path, remove_background=False):
     global CAT_IDS
 
     cocoGT = COCO(coco_path)
@@ -264,6 +266,8 @@ def eval(predict_path, coco_path, output_path):
     output_path = f"{output_path}/eval.pkl"
 
     CAT_IDS = cocoGT.getCatIds()
+    if remove_background:
+        CAT_IDS.remove(0)
 
     video_id_set, img_scores = get_image_scores(cocoDT, cocoGT)
     video_scores = get_video_scores(video_id_set, img_scores)
@@ -275,7 +279,7 @@ def eval(predict_path, coco_path, output_path):
 
 if __name__ == "__main__":
     eval(
-        predict_path="/bd_byta6000i0/users/sam2/kyyang/sam2_predict/output/mask/standard/predict.json",
-        coco_path="coco_annotations.json",
-        output_path="/bd_byta6000i0/users/sam2/kyyang/sam2_predict/output/mask/standard/",
+        predict_path="/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/baseline_results/endovis17/3_mem/eval/predict.json",
+        coco_path="/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis17_coco_annotations_val_opened.json",
+        output_path="/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/baseline_results/endovis17/3_mem",
     )

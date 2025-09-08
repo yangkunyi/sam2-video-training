@@ -93,7 +93,7 @@ def show_box(box, ax):
 
 
 def mask_to_masks(mask: np.ndarray) -> list:
-    kernel = np.ones((5, 5), np.uint8)  # 可以调整核的大小来控制闭运算程度
+    kernel = np.ones((10, 10), np.uint8)  # 可以调整核的大小来控制闭运算程度
 
     # 对 mask 进行闭运算
     closed_mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
