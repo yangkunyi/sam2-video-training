@@ -25,7 +25,6 @@ from pycocotools import mask as mask_utils
 from sam2_video.data.data_utils import BatchedVideoDatapoint, BatchedVideoMetaData
 
 
-
 class COCOImageDataset(Dataset):
     """Minimal COCO-format dataset that returns a single image and its per-category mask tensor."""
 
@@ -55,6 +54,8 @@ class COCOImageDataset(Dataset):
             coco_data = json.load(f)
 
         self.images: List[Dict[str, Any]] = coco_data.get("images", [])
+        self.images = [img for img in self.images if img["is_det_keyframe"]]
+
         self.annotations: List[Dict[str, Any]] = coco_data.get("annotations", [])
         self.categories: List[Dict[str, Any]] = coco_data.get("categories", [])
 
@@ -68,7 +69,9 @@ class COCOImageDataset(Dataset):
         inferred_num_cats = len(sorted_cats)
 
         self.num_categories = (
-            config.num_categories if config.num_categories is not None else inferred_num_cats
+            config.num_categories
+            if config.num_categories is not None
+            else inferred_num_cats
         )
         # Create image ID to annotations mapping
         self.image_id_to_annotations = {}
@@ -92,7 +95,9 @@ class COCOImageDataset(Dataset):
             )
 
         # Index: image-id -> index in self.images for O(1) lookups
-        self.image_id_to_idx: Dict[int, int] = {img["id"]: i for i, img in enumerate(self.images)}
+        self.image_id_to_idx: Dict[int, int] = {
+            img["id"]: i for i, img in enumerate(self.images)
+        }
 
         # Default transform
         self.transform = T.Compose(
@@ -164,7 +169,7 @@ class COCOImageDataset(Dataset):
             m = torch.from_numpy(m_np).unsqueeze(0).float()  # [1, H, W]
             m = F.resize(m, self.image_size, T.InterpolationMode.NEAREST)
             m = F.center_crop(m, [self.image_size, self.image_size])
-            m = (m.squeeze(0) > 0.5)  # [H, W] -> bool
+            m = m.squeeze(0) > 0.5  # [H, W] -> bool
 
             # Merge multiple instances of same category with OR
             masks[cat_idx] |= m
@@ -277,8 +282,12 @@ class VideoDataset(Dataset):
         image_indices = clip_info["image_indices"]
 
         # Materialize tensors for the clip
-        images = torch.stack([self.image_dataset[i]["image"] for i in image_indices])  # [T, C, H, W]
-        masks = torch.stack([self.image_dataset[i]["masks"] for i in image_indices])  # [T, N, H, W]
+        images = torch.stack(
+            [self.image_dataset[i]["image"] for i in image_indices]
+        )  # [T, C, H, W]
+        masks = torch.stack(
+            [self.image_dataset[i]["masks"] for i in image_indices]
+        )  # [T, N, H, W]
 
         return {
             "images": images,
@@ -336,9 +345,9 @@ def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDa
     images = torch.stack([s["images"] for s in batch_list]).permute(1, 0, 2, 3, 4)
     T, B, C, H, W = images.shape
     # KISS: current pipeline assumes batch size of 1 for tracking simplicity
-    assert (
-        B == 1
-    ), f"Only batch_size=1 is supported in the simplified pipeline, got B={B}"
+    assert B == 1, (
+        f"Only batch_size=1 is supported in the simplified pipeline, got B={B}"
+    )
 
     # 2. 取 masks [B, T, N, H, W] -> [T, B, N, H, W]
     masks = torch.stack([s["masks"] for s in batch_list]).permute(1, 0, 2, 3, 4)

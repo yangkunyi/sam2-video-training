@@ -8,6 +8,8 @@ model:
   - memory_encoder
   - memory_attention
   prompt_type: mask
+combo:
+  name: endovis17_7_mem
 data_module:
   data: ${data}
 

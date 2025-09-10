@@ -120,7 +120,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects):
         target_masks = targets.unsqueeze(1).float()
-        assert target_masks.dim() == 4  # [N, 1, H, W]
         src_masks_list = outputs["multistep_pred_multimasks_high_res"]
         ious_list = outputs["multistep_pred_ious"]
         object_score_logits_list = outputs["multistep_object_score_logits"]
@@ -147,8 +146,10 @@ class MultiStepMultiMasksAndIous(nn.Module):
         valid = target_masks.sum(
             dim=(2, 3)
         ).bool()  # [N] which channels have foreground
+        
         if not valid.any():
-            # No valid masks, skip loss computation
+            logger.warning("DEBUG: no valid masks")
+            raise ValueError("No valid masks")
             return
 
         # Filter tensors to only include valid masks
@@ -160,8 +161,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             object_score_logits = object_score_logits[valid]
 
         # Update num_objects for filtered tensors
-        num_objects = float(src_masks.shape[0])
-        loss_multimask = sigmoid_focal_loss(
+        num_objects = float(src_masks.shape[0]) loss_multimask = sigmoid_focal_loss(
             src_masks,
             target_masks,
             num_objects,
@@ -173,9 +173,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             src_masks, target_masks, num_objects, loss_on_multimask=True
         )
         if not self.pred_obj_scores:
-            loss_class = torch.tensor(
-                0.0, dtype=loss_multimask.dtype, device=loss_multimask.device
-            )
+            loss_class = loss_multimask.sum() * 0.0
             target_obj = torch.ones(
                 loss_multimask.shape[0],
                 1,

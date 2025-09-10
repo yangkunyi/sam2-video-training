@@ -8,6 +8,8 @@ model:
   - mask_decoder
   prompt_type: box
   num_pos_points: 1
+combo:
+  name: cholecseg8k_raw_box
 data_module:
   data: ${data}
 

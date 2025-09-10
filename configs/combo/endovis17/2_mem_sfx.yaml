@@ -11,5 +11,7 @@ model:
   - memory_attention
   prompt_type: point
   num_pos_points: 1
+combo:
+  name: endovis17_2_mem_sfx
 data_module:
   data: ${data}

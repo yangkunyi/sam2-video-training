@@ -19,13 +19,14 @@ import torch
 
 from sam2_video.eval import inference as eval_infer
 from sam2_video.eval import eval as eval_eval
+from baseline_utils import extract_baseline_metrics, calculate_metrics_delta
 
 from hydra.core.global_hydra import GlobalHydra
 
 GlobalHydra.instance().clear()
 
 
-@hydra.main(config_path="configs", config_name="train", version_base=None)
+@hydra.main(config_path="configs", config_name="best", version_base=None)
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main(cfg: DictConfig) -> None:
     """Main entry point with consolidated training logic and Hydra configuration management."""
@@ -47,18 +48,15 @@ def main(cfg: DictConfig) -> None:
         combo_name = getattr(cfg.combo, "name", "unknown")
     else:
         combo_name = "unknown"
-    
+
     tags = [
         combo_name,
         cfg.model.prompt_type,
         cfg.data.name,
-        "_".join(cfg.model.trainable_modules)
-        if hasattr(cfg.model, "trainable_modules")
-        else "unknown",
         f"stride{cfg.loss.gt_stride}",
-    ]
+    ].extend(cfg.model.trainable_modules)
 
-    exp_name = "-".join(tags)
+    exp_name = combo_name
 
     # Weights & Biases
     logger.info(f"Initializing W&B logger for project: {cfg.wandb.project}")
@@ -189,6 +187,29 @@ def main(cfg: DictConfig) -> None:
         "eval/Dice": float(result["avg_scores"]["dice"]),
         "eval/MAE": float(result["avg_scores"]["mae"]),
     }
+
+    # Calculate and add baseline deltas
+    baseline_metrics = extract_baseline_metrics(combo_name)
+    if baseline_metrics:
+        # Convert summary keys to match baseline format
+        current_metrics = {
+            "mIoU": summary["eval/mIoU"],
+            "Dice": summary["eval/Dice"],
+            "MAE": summary["eval/MAE"],
+        }
+
+        delta_metrics = calculate_metrics_delta(current_metrics, baseline_metrics)
+
+        # Add deltas to summary with eval/ prefix
+        for metric_key, delta_value in delta_metrics.items():
+            summary[f"eval/{metric_key}"] = delta_value
+
+        logger.info(f"Added baseline deltas for {combo_name}: {delta_metrics}")
+    else:
+        logger.warning(
+            f"No baseline found for {combo_name}, skipping delta calculation"
+        )
+
     wandb_logger.experiment.summary.update(summary)
     with open(eval_dir / "metrics.json", "w") as f:
         json.dump(summary, f, indent=2)

@@ -95,6 +95,7 @@ def make_yaml_content(
     dataset: str,
     prompt_type: str,
     trainable_modules: List[str],
+    combo_name: str,
 ) -> Dict:
     cfg: Dict = {
         "defaults": [
@@ -104,6 +105,9 @@ def make_yaml_content(
             "fintuned_model_path": checkpoint_path,
             "trainable_modules": trainable_modules,
             "prompt_type": prompt_type,
+        },
+        "combo": {
+            "name": combo_name,
         },
         "data_module": {
             "data": "${data}",
@@ -141,7 +145,8 @@ def main() -> None:
 
         # Variant 1: memory only
         mem_modules = ["memory_encoder", "memory_attention"]
-        mem_yaml = make_yaml_content(ckpt, dataset, prompt_type, mem_modules)
+        combo_name_mem = f"{dataset}_{idx}_mem"
+        mem_yaml = make_yaml_content(ckpt, dataset, prompt_type, mem_modules, combo_name_mem)
         # Respect existing example 1.yaml; otherwise write idx_mem.yaml
         mem_path = out_dir / f"{idx}_mem.yaml"
         write_yaml(mem_path, mem_yaml)
@@ -149,7 +154,8 @@ def main() -> None:
         sfx_modules = trainable_modules_for_suffix(suffix)
         # Variant 3: memory + suffix modules (union, preserving order)
         combined = mem_modules + [m for m in sfx_modules if m not in mem_modules]
-        mem_sfx_yaml = make_yaml_content(ckpt, dataset, prompt_type, combined)
+        combo_name_mem_sfx = f"{dataset}_{idx}_mem_sfx"
+        mem_sfx_yaml = make_yaml_content(ckpt, dataset, prompt_type, combined, combo_name_mem_sfx)
         mem_sfx_path = out_dir / f"{idx}_mem_sfx.yaml"
         write_yaml(mem_sfx_path, mem_sfx_yaml)
 

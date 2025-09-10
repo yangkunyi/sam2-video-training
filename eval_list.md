@@ -7,3 +7,7 @@
 - /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/endovis17_mask/endovis17_mask_3.torch
 - /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/endovis17_mask_pe/endovis17_mask_pe_17.torch
 - /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/endovis17_mask_all/endovis17_mask_1.torch
+
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/endovis18_point/endovis18_point_7.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/endovis18_point_pe/endovis18_point_pe_1.torch
+- /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/endovis18_point_all/endovis18_point_all_6.torch

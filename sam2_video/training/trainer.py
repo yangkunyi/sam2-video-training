@@ -306,7 +306,7 @@ class SAM2LightningModule(L.LightningModule):
 class SAM2LightningDataModule(L.LightningDataModule):
     """Lightning data module for SAM2 training."""
 
-    def __init__(self, data: Any):
+    def __init__(self, data: Any, train_shuffle: bool = True):
         """
         Initialize data module with unpacked data configuration section.
 
@@ -357,7 +357,7 @@ class SAM2LightningDataModule(L.LightningDataModule):
             self.train_dataset,
             batch_size=self.hparams.data.batch_size,
             num_workers=self.hparams.data.num_workers,
-            shuffle=False,  # 注意：在原始代码中为False，通常训练集会设为True
+            shuffle=self.hparams.train_shuffle,  # 注意：在原始代码中为False，通常训练集会设为True
             pin_memory=True,
             collate_fn=sam2_collate_fn,
         )
