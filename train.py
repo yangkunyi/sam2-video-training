@@ -25,7 +25,7 @@ from hydra.core.global_hydra import GlobalHydra
 GlobalHydra.instance().clear()
 
 
-@hydra.main(config_path="configs", config_name="train_1", version_base=None)
+@hydra.main(config_path="configs", config_name="train", version_base=None)
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main(cfg: DictConfig) -> None:
     """Main entry point with consolidated training logic and Hydra configuration management."""
@@ -43,7 +43,13 @@ def main(cfg: DictConfig) -> None:
     logger.add(OUTPUT_DIR / "training.log", rotation="10 MB", retention="10 days")
     # Extract combo name and number from config
     # Create tags for wandb
+    if hasattr(cfg, "combo"):
+        combo_name = getattr(cfg.combo, "name", "unknown")
+    else:
+        combo_name = "unknown"
+    
     tags = [
+        combo_name,
         cfg.model.prompt_type,
         cfg.data.name,
         "_".join(cfg.model.trainable_modules)

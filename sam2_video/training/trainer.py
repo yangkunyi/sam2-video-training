@@ -73,13 +73,14 @@ class SAM2LightningModule(L.LightningModule):
             self.criterion = BCECategoryLoss(pos_weight=pos_weight, reduction=reduction)
             logger.info("Using BCECategoryLoss (BCEWithLogits over [C,H,W])")
         else:
-            weight_dict = {
-                "loss_mask": getattr(self.hparams.loss, "bce_weight", 1.0),
-                "loss_dice": getattr(self.hparams.loss, "dice_weight", 1.0),
-                "loss_iou": getattr(self.hparams.loss, "iou_weight", 0.5),
-                "loss_class": 0.0,
-            }
-            self.criterion = MultiStepMultiMasksAndIous(weight_dict=weight_dict)
+            self.criterion = MultiStepMultiMasksAndIous(
+                weight_dict=self.hparams.loss.weight_dict,
+                supervise_all_iou=self.hparams.loss.supervise_all_iou,
+                iou_use_l1_loss=self.hparams.loss.iou_use_l1_loss,
+                pred_obj_scores=self.hparams.loss.pred_obj_scores,
+                focal_gamma_obj_score=self.hparams.loss.focal_gamma_obj_score,
+                focal_alpha_obj_score=self.hparams.loss.focal_alpha_obj_score,
+            )
             logger.info("Using MultiStepMultiMasksAndIous loss")
 
         # MODIFIED: 使用 self.hparams.loss 访问配置
@@ -131,7 +132,7 @@ class SAM2LightningModule(L.LightningModule):
                 getattr(self.trainer, "estimated_stepping_batches", 0) or 0
             )
             total_steps = max(1, total_steps)
-            warmup_steps = 30
+            warmup_steps = total_steps * self.hparams.optimizer.warmup_factor
             if warmup_steps >= total_steps:
                 warmup_steps = max(0, total_steps - 1)
 
@@ -356,7 +357,7 @@ class SAM2LightningDataModule(L.LightningDataModule):
             self.train_dataset,
             batch_size=self.hparams.data.batch_size,
             num_workers=self.hparams.data.num_workers,
-            shuffle=True,  # 注意：在原始代码中为False，通常训练集会设为True
+            shuffle=False,  # 注意：在原始代码中为False，通常训练集会设为True
             pin_memory=True,
             collate_fn=sam2_collate_fn,
         )

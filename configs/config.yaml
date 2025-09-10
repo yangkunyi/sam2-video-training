@@ -57,12 +57,17 @@ loss:
   # Subsample frames for loss (use frames 0, k, 2k, ...)
   gt_stride: 1
   # Multi-step weights (used when type=multi_step)
-  bce_weight: 1.0
-  dice_weight: 1.0
-  iou_weight: 0.5
-  # BCE-only options (used when type=bce)
-  # bce_pos_weight: null  # e.g., [1.0, 2.0, ...] length == num_categories
-  # bce_reduction: mean
+  weight_dict:
+    loss_mask: 20
+    loss_dice: 1
+    loss_iou: 1
+    loss_class: 0
+  supervise_all_iou: true
+  iou_use_l1_loss: true
+  pred_obj_scores: false 
+  focal_gamma_obj_score: 0.0
+  focal_alpha_obj_score: -1.0
+
 
 # Optimizer configuration
 optimizer:

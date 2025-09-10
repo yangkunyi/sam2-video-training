@@ -10,57 +10,57 @@ parameters:
   +combo:
     values:
     - "cholecseg8k/1_mem"
-    - "cholecseg8k/1_sfx"
+    
     - "cholecseg8k/1_mem_sfx"
     - "cholecseg8k/2_mem"
-    - "cholecseg8k/2_sfx"
+    
     - "cholecseg8k/2_mem_sfx"
     - "cholecseg8k/3_mem"
-    - "cholecseg8k/3_sfx"
+    
     - "cholecseg8k/3_mem_sfx"
     - "cholecseg8k/4_mem"
-    - "cholecseg8k/4_sfx"
+    
     - "cholecseg8k/4_mem_sfx"
     - "cholecseg8k/5_mem"
-    - "cholecseg8k/5_sfx"
+    
     - "cholecseg8k/5_mem_sfx"
     - "cholecseg8k/6_mem"
-    - "cholecseg8k/6_sfx"
+    
     - "cholecseg8k/6_mem_sfx"
-    - "cholecseg8k/7_sfx"
+    
     - "cholecseg8k/7_mem_sfx"
     - "cholecseg8k/8_mem"
-    - "cholecseg8k/8_sfx"
+    
     - "cholecseg8k/8_mem_sfx"
     - "cholecseg8k/9_mem"
-    - "cholecseg8k/9_sfx"
+    
     - "cholecseg8k/9_mem_sfx"
     
     - "endovis17/1_mem"
-    - "endovis17/1_sfx"
+    
     - "endovis17/1_mem_sfx"
     - "endovis17/2_mem"
-    - "endovis17/2_sfx"
+    
     - "endovis17/2_mem_sfx"
     - "endovis17/3_mem"
-    - "endovis17/3_sfx"
+    
     - "endovis17/3_mem_sfx"
     - "endovis17/4_mem"
-    - "endovis17/4_sfx"
+    
     - "endovis17/4_mem_sfx"
     - "endovis17/5_mem"
-    - "endovis17/5_sfx"
+    
     - "endovis17/5_mem_sfx"
     - "endovis17/6_mem"
-    - "endovis17/6_sfx"
+    
     - "endovis17/6_mem_sfx"
-    - "endovis17/7_sfx"
+    
     - "endovis17/7_mem_sfx"
     - "endovis17/8_mem"
-    - "endovis17/8_sfx"
+    
     - "endovis17/8_mem_sfx"
     - "endovis17/9_mem"
-    - "endovis17/9_sfx"
+    
     - "endovis17/9_mem_sfx"
     
 

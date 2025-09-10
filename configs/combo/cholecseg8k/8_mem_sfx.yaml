@@ -5,11 +5,10 @@ defaults:
 model:
   fintuned_model_path: /bd_byta6000i0/users/sam2/wl/zero_shot/sam_model_test/cholecseg8k_mask_pe/cholecseg8k_mask_pe_1.torch
   trainable_modules:
+  - prompt_encoder
+  - mask_decoder
   - memory_encoder
   - memory_attention
-  - mask_decoder
-  - prompt_encoder
   prompt_type: mask
 data_module:
   data: ${data}
-

@@ -5,6 +5,8 @@ defaults:
 model:
   trainable_modules:
     - mask_decoder
+    - memory_encoder
+    - memory_attention
   
 
 trainer:
@@ -15,7 +17,7 @@ trainer:
   num_sanity_val_steps: 1
   detect_anomaly: false
   log_every_n_steps: 1
-  gradient_clip_val: 1.0
+  gradient_clip_val: 3
   accumulate_grad_batches: 1
   precision: 16
 
@@ -24,7 +26,13 @@ scheduler:
   warmup_enabled: false
 
 optimizer:
-  lr: 1e-4
+  type: AdamW
+  lr: 7e-3
+  weight_decay: 1e-4
+  betas: [0.9, 0.98]
+  eps: 1e-5
+  amsgrad: true
+  warmup_factor: 0.1
 
 visualization:
   train_every_n_steps: 1
@@ -34,4 +42,4 @@ data:
   stride: 20
 
 loss:
-  type: bce
+  type: raw

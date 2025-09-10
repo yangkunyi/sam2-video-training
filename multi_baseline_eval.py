@@ -12,7 +12,7 @@ def job(cfg_path, gpu):
 
 
 tasks = discover_combo_configs()
-with concurrent.futures.ThreadPoolExecutor(18) as pool:
-    futures = [pool.submit(job, cfg, idx % 8) for idx, cfg in enumerate(tasks)]
+with concurrent.futures.ThreadPoolExecutor(5) as pool:
+    futures = [pool.submit(job, cfg, idx % 1) for idx, cfg in enumerate(tasks)]
     for f in concurrent.futures.as_completed(futures):
         f.result()  # 有异常就抛

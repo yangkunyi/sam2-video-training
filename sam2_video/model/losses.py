@@ -42,8 +42,8 @@ def sigmoid_focal_loss(
     gamma: float = 2,
     loss_on_multimask=False,
 ):
-    prob = inputs.sigmoid()
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+    prob = inputs.sigmoid()
     p_t = prob * targets + (1 - prob) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
 
@@ -142,6 +142,25 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
     ):
         target_masks = target_masks.expand_as(src_masks)
+
+        # Filter valid masks (channels with foreground pixels)
+        valid = target_masks.sum(
+            dim=(2, 3)
+        ).bool()  # [N] which channels have foreground
+        if not valid.any():
+            # No valid masks, skip loss computation
+            return
+
+        # Filter tensors to only include valid masks
+        src_masks = src_masks[valid].unsqueeze(1)
+        target_masks = target_masks[valid].unsqueeze(1)
+        ious = ious[valid].unsqueeze(1)
+
+        if object_score_logits is not None:
+            object_score_logits = object_score_logits[valid]
+
+        # Update num_objects for filtered tensors
+        num_objects = float(src_masks.shape[0])
         loss_multimask = sigmoid_focal_loss(
             src_masks,
             target_masks,
@@ -203,10 +222,6 @@ class MultiStepMultiMasksAndIous(nn.Module):
             loss_mask = loss_multimask
             loss_dice = loss_multidice
             loss_iou = loss_multiiou
-
-        loss_mask = loss_mask * target_obj
-        loss_dice = loss_dice * target_obj
-        loss_iou = loss_iou * target_obj
 
         losses["loss_mask"] += loss_mask.sum()
         losses["loss_dice"] += loss_dice.sum()
@@ -275,6 +290,7 @@ class BCECategoryLoss(nn.Module):
             pos_weight=pos_weight,
             reduction=reduction,
         )
+
     @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(
         self, outs_batch: List[Dict], targets_batch: torch.Tensor

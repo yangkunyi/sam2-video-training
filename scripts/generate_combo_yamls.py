@@ -17,6 +17,7 @@ Outputs are written to configs/combo/{index}_{variant}.yaml where index is
 1-based order in eval_list.md. If configs/combo/1.yaml exists (example), we
 still generate 1_sfx.yaml and 1_mem_sfx.yaml and leave 1.yaml untouched.
 """
+
 from __future__ import annotations
 
 import re
@@ -145,12 +146,7 @@ def main() -> None:
         mem_path = out_dir / f"{idx}_mem.yaml"
         write_yaml(mem_path, mem_yaml)
 
-        # Variant 2: suffix-driven modules
         sfx_modules = trainable_modules_for_suffix(suffix)
-        sfx_yaml = make_yaml_content(ckpt, dataset, prompt_type, sfx_modules)
-        sfx_path = out_dir / f"{idx}_sfx.yaml"
-        write_yaml(sfx_path, sfx_yaml)
-
         # Variant 3: memory + suffix modules (union, preserving order)
         combined = mem_modules + [m for m in sfx_modules if m not in mem_modules]
         mem_sfx_yaml = make_yaml_content(ckpt, dataset, prompt_type, combined)
