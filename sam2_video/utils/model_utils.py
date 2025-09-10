@@ -21,7 +21,6 @@ def get_model_info(
     checkpoint_path: str,
     config_path: str,
     device: str,
-    image_size: int,
 ) -> Dict[str, Any]:
     trainable_params = count_trainable_parameters(model)
     total_params = count_total_parameters(model)
@@ -33,7 +32,6 @@ def get_model_info(
         "checkpoint_path": checkpoint_path,
         "config_path": config_path,
         "device": device,
-        "image_size": image_size,
     }
 
 

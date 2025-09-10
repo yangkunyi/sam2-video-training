@@ -172,7 +172,17 @@ class SAM2LightningModule(L.LightningModule):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, batch: BatchedVideoDatapoint):
         """Forward pass returning per-frame outputs (list of dicts)."""
-        return self.model(batch)
+        # Strategic memory management: clear cache before forward pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        result = self.model(batch)
+        
+        # Strategic memory management: clear cache after forward pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return result
 
     def _apply_gt_stride(
         self, outs_per_frame: List[Dict[str, Any]], target_masks: torch.Tensor
@@ -243,9 +253,17 @@ class SAM2LightningModule(L.LightningModule):
     def training_step(
         self, batch: BatchedVideoDatapoint, batch_idx: int
     ) -> torch.Tensor:
-        # ... (此处代码无需修改)
-        # 确保 training_step 的其余部分保持不变
+        # Strategic memory management before forward pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Forward pass
         outs_per_frame, obj_to_cat = self.forward(batch)
+        
+        # Strategic memory management after forward pass, before loss computation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         target_masks = batch.masks
         outs_for_loss, targets_for_loss = self._apply_gt_stride(
             outs_per_frame, target_masks
@@ -271,14 +289,27 @@ class SAM2LightningModule(L.LightningModule):
             self._log_gif(
                 "train", frames, batch.masks, outs_per_frame, obj_to_cat, "train"
             )
+        
+        # Strategic memory management after loss computation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         return total_loss
 
     def validation_step(
         self, batch: BatchedVideoDatapoint, batch_idx: int
     ) -> torch.Tensor:
-        # ... (此处代码无需修改)
-        # 确保 validation_step 的其余部分保持不变
+        # Strategic memory management before forward pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Forward pass
         outs_per_frame, obj_to_cat = self.forward(batch)
+        
+        # Strategic memory management after forward pass, before loss computation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         target_masks = batch.masks
         outs_for_loss, targets_for_loss = self._apply_gt_stride(
             outs_per_frame, target_masks
@@ -300,6 +331,11 @@ class SAM2LightningModule(L.LightningModule):
         if self._should_log_gif("val", batch_idx):
             frames = batch.img_batch.squeeze(1)
             self._log_gif("val", frames, batch.masks, outs_per_frame, obj_to_cat, "val")
+        
+        # Strategic memory management after validation computation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         return total_loss
 
 

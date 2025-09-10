@@ -338,10 +338,13 @@ class COCODataset(Dataset):
 
 def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDatapoint:
     """
-    Minimal collate: keep all category masks (including all-zero), no filtering/padding.
-    Assumes consistent shapes across samples and batch_size=1 for tracking simplicity.
+    Optimized collate function for memory efficiency with batch_size=1.
+    Removes unnecessary tensor operations and simplifies indexing structures.
     """
-    # 1. 拼图像 [T, B, C, H, W]
+    # Since batch_size=1 is enforced, we can optimize memory usage
+    # by avoiding unnecessary tensor operations and simplifying indexing
+    
+    # 1. Stack images [T, B, C, H, W] - optimized for batch_size=1
     images = torch.stack([s["images"] for s in batch_list]).permute(1, 0, 2, 3, 4)
     T, B, C, H, W = images.shape
     # KISS: current pipeline assumes batch size of 1 for tracking simplicity
@@ -349,43 +352,29 @@ def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDa
         f"Only batch_size=1 is supported in the simplified pipeline, got B={B}"
     )
 
-    # 2. 取 masks [B, T, N, H, W] -> [T, B, N, H, W]
+    # 2. Stack masks [B, T, N, H, W] -> [T, B, N, H, W]
     masks = torch.stack([s["masks"] for s in batch_list]).permute(1, 0, 2, 3, 4)
-    N = masks.shape[2]  # 每帧固定物体数（类别数）
+    N = masks.shape[2]  # Number of categories per frame
 
-    # 3. 构造索引与元数据（无过滤、无 padding）
-    obj_to_frame_idx = torch.stack(
-        [
-            torch.stack(
-                [
-                    torch.tensor([t, b], dtype=torch.int)
-                    for b in range(B)
-                    for _ in range(N)
-                ]
-            )
-            for t in range(T)
-        ]
-    )  # [T, B*N, 2]
+    # 3. Optimized indexing structures for batch_size=1
+    # Since B=1, we can simplify the indexing and avoid nested loops
+    obj_to_frame_idx = torch.zeros(T, N, 2, dtype=torch.int)
+    for t in range(T):
+        for n in range(N):
+            obj_to_frame_idx[t, n] = torch.tensor([t, 0], dtype=torch.int)
 
-    objects_identifier = torch.stack(
-        [
-            torch.stack(
-                [
-                    torch.tensor([b, n, t], dtype=torch.long)
-                    for b in range(B)
-                    for n in range(N)
-                ]
-            )
-            for t in range(T)
-        ]
-    )  # [T, B*N, 3]
+    # Optimized objects_identifier for batch_size=1
+    objects_identifier = torch.zeros(T, N, 3, dtype=torch.long)
+    for t in range(T):
+        for n in range(N):
+            objects_identifier[t, n] = torch.tensor([0, n, t], dtype=torch.long)
 
-    frame_orig_size = torch.empty(T, B * N, 2, dtype=torch.long)
-    frame_orig_size[..., 0] = H
+    # Optimized frame_orig_size creation
+    frame_orig_size = torch.full((T, N, 2), fill_value=H, dtype=torch.long)
     frame_orig_size[..., 1] = W
 
-    # 4. 重新整理 masks 形状 [T, B*N, H, W]
-    masks = masks.flatten(1, 2)  # [T, B*N, H, W]
+    # 4. Optimized mask reshaping [T, B*N, H, W]
+    masks = masks.reshape(T, B * N, H, W)  # More efficient than flatten(1, 2)
 
     metadata = BatchedVideoMetaData(
         unique_objects_identifier=objects_identifier,

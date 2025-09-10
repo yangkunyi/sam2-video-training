@@ -44,7 +44,6 @@ class SAM2Model(SAM2Base):
         fintuned_model_path: Optional[str] = None,
         trainable_modules: Optional[List[str]] = None,
         device: str = "cuda",
-        image_size: int = 512,
         prompt_type: str = "point",
         forward_backbone_per_frame_for_eval: bool = False,
         num_pos_points: int = 1,
@@ -61,7 +60,6 @@ class SAM2Model(SAM2Base):
         # 1. 保存配置参数为成员变量
         self.checkpoint_path = checkpoint_path
         self.config_path = config_path
-        self.image_size = image_size
         self.prompt_type = prompt_type
         assert self.prompt_type in ["point", "box", "mask"], (
             f"prompt_type must be one of ['point', 'box', 'mask'], got {self.prompt_type}"
@@ -458,7 +456,6 @@ class SAM2Model(SAM2Base):
             self.checkpoint_path,
             self.config_path,
             self.device,
-            self.image_size,
         )
 
     def _get_module_mapping(self) -> Dict[str, nn.Module]:
@@ -524,7 +521,6 @@ class SAM2Model(SAM2Base):
             "checkpoint_path": self.checkpoint_path,
             "config_path": self.config_path,
             "device": self.device,
-            "image_size": self.image_size,
             "prompt_type": self.model_config.prompt_type,
             "trainable_modules": self.model_config.trainable_modules,
         }

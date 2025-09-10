@@ -146,11 +146,15 @@ class MultiStepMultiMasksAndIous(nn.Module):
         valid = target_masks.sum(
             dim=(2, 3)
         ).bool()  # [N] which channels have foreground
-        
+
         if not valid.any():
             logger.warning("DEBUG: no valid masks")
-            raise ValueError("No valid masks")
-            return
+            zero_loss = src_masks.sum() * 0.0
+            losses["loss_mask"] += zero_loss
+            losses["loss_dice"] += zero_loss
+            losses["loss_iou"] += zero_loss
+            losses["loss_class"] += zero_loss
+            raise ValueError("No valid masks")  # 抛出异常，不再继续计算
 
         # Filter tensors to only include valid masks
         src_masks = src_masks[valid].unsqueeze(1)
@@ -161,7 +165,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
             object_score_logits = object_score_logits[valid]
 
         # Update num_objects for filtered tensors
-        num_objects = float(src_masks.shape[0]) loss_multimask = sigmoid_focal_loss(
+        num_objects = float(src_masks.shape[0])
+        loss_multimask = sigmoid_focal_loss(
             src_masks,
             target_masks,
             num_objects,
