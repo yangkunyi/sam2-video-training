@@ -15,7 +15,10 @@ import sys
 from sam2.build_sam import build_sam2
 
 # SAM2 core imports
-from sam2.modeling.sam2_base import SAM2Base
+# Use a package-relative import to avoid relying on a top-level
+# module named "modeling" when importing this file as part of
+# the sam2_video package.
+from .modeling.sam2_base import SAM2Base
 
 from sam2_video import utils
 from sam2_video.data.data_utils import BatchedVideoDatapoint

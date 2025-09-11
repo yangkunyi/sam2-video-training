@@ -11,6 +11,8 @@ from typing import Dict, Any, List
 from loguru import logger
 import sys
 from hydra.utils import instantiate
+import gc
+
 
 from sam2_video.data.dataset import sam2_collate_fn
 from sam2_video.model.losses import (
@@ -19,7 +21,7 @@ from sam2_video.model.losses import (
     CORE_LOSS_KEY,
 )
 from sam2_video.data.data_utils import BatchedVideoDatapoint
-
+from .mem import snap_when_peak
 
 from torch.utils.data import DataLoader
 import wandb
@@ -172,17 +174,8 @@ class SAM2LightningModule(L.LightningModule):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, batch: BatchedVideoDatapoint):
         """Forward pass returning per-frame outputs (list of dicts)."""
-        # Strategic memory management: clear cache before forward pass
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        result = self.model(batch)
-        
-        # Strategic memory management: clear cache after forward pass
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        return result
+        out = self.model(batch)
+        return out
 
     def _apply_gt_stride(
         self, outs_per_frame: List[Dict[str, Any]], target_masks: torch.Tensor
@@ -254,16 +247,10 @@ class SAM2LightningModule(L.LightningModule):
         self, batch: BatchedVideoDatapoint, batch_idx: int
     ) -> torch.Tensor:
         # Strategic memory management before forward pass
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         # Forward pass
         outs_per_frame, obj_to_cat = self.forward(batch)
-        
+
         # Strategic memory management after forward pass, before loss computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         target_masks = batch.masks
         outs_for_loss, targets_for_loss = self._apply_gt_stride(
             outs_per_frame, target_masks
@@ -289,27 +276,21 @@ class SAM2LightningModule(L.LightningModule):
             self._log_gif(
                 "train", frames, batch.masks, outs_per_frame, obj_to_cat, "train"
             )
-        
+
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()  # 把碎片还给 CUDA
+
         # Strategic memory management after loss computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         return total_loss
 
     def validation_step(
         self, batch: BatchedVideoDatapoint, batch_idx: int
     ) -> torch.Tensor:
         # Strategic memory management before forward pass
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         # Forward pass
         outs_per_frame, obj_to_cat = self.forward(batch)
-        
+
         # Strategic memory management after forward pass, before loss computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         target_masks = batch.masks
         outs_for_loss, targets_for_loss = self._apply_gt_stride(
             outs_per_frame, target_masks
@@ -331,12 +312,41 @@ class SAM2LightningModule(L.LightningModule):
         if self._should_log_gif("val", batch_idx):
             frames = batch.img_batch.squeeze(1)
             self._log_gif("val", frames, batch.masks, outs_per_frame, obj_to_cat, "val")
-        
+
         # Strategic memory management after validation computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         return total_loss
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        torch.cuda.synchronize()  # 等 GPU 干完活
+        alloc = torch.cuda.memory_allocated() / 1024**3  # GB
+        resv = torch.cuda.memory_reserved() / 1024**3
+        peak = torch.cuda.max_memory_allocated() / 1024**3
+        step = self.trainer.fit_loop.epoch_loop.batch_progress.total.completed
+        torch.cuda.memory._dump_snapshot(f"memory_dump/oom_{step}.pickle")
+        print(">>> 已写入 oom.pickle")
+        print(
+            f">>> GPU 内存分配 step={step} alloc={alloc:.2f} GB resv={resv:.2f} GB peak={peak:.2f} GB"
+        )
+        if peak > 20:  # 20 GB 就预警
+            print(f">>> OOM 预警 step={step} peak={peak:.2f} GB")
+        if batch_idx == 3:
+            torch.cuda.synchronize()
+            gc.collect()
+            # ① 当前存活 tensor
+            live = [
+                (obj.shape, obj.numel() * obj.element_size() / 1024**3)
+                for obj in gc.get_objects()
+                if torch.is_tensor(obj) and obj.is_cuda
+            ]
+            live.sort(key=lambda x: -x[1])
+            print(">>> TOP-5 存活 tensor")
+            for shape, gb in live[:5]:
+                print(f"  {shape}  {gb:.2f} GB")
+
+            # ② PyTorch 内部统计
+            alloc = torch.cuda.memory_allocated() / 1024**3
+            resv = torch.cuda.memory_reserved() / 1024**3
+            print(f">>> alloc={alloc:.2f} GB  resv={resv:.2f} GB")
 
 
 class SAM2LightningDataModule(L.LightningDataModule):

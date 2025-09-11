@@ -506,8 +506,6 @@ def process_video_clip(frames, clip_prompts: List[PromptInfo], clip_range: ClipR
     video_segments = predict_on_video(predictor, inference_state, start_idx)
 
     del predictor
-    torch.cuda.empty_cache()
-
     return video_segments
 
 
@@ -737,8 +735,6 @@ def process_singel_video(
         save_prompt_frame(clip_prompts)
         logger.info(clip_range)
         video_segments.update(process_video_clip(frames, clip_prompts, clip_range))
-
-    torch.cuda.empty_cache()
     return video_segments
 
 
@@ -763,7 +759,6 @@ def process_all_videos(prompt_type, clip_length, variable_cats):
         )
         # print(video_segments)
         all_video_segments[video_id] = video_segments
-        torch.cuda.empty_cache()
         free_memory, total_memory = torch.cuda.mem_get_info()
         logger.info(f"free memory: {free_memory / 1024**3:.2f} GB\n")
 
