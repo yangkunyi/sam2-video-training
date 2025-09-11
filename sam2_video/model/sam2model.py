@@ -104,7 +104,6 @@ class SAM2Model(SAM2Base):
         if self.fintuned_model_path is not None:
             if self.fintuned_model_path.count("all") > 0:
                 state_dict = torch.load(self.fintuned_model_path, weights_only=False)
-                logger.warning(f"type(state_dict): {type(state_dict)}")
                 if not isinstance(state_dict, OrderedDict):
                     self.load_state_dict(state_dict.state_dict(), strict=False)
                 else:

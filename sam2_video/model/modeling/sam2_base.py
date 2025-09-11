@@ -748,9 +748,17 @@ class SAM2Base(torch.nn.Module):
             ]
         else:
             high_res_features = None
-        if mask_inputs is not None and self.use_mask_input_as_output_without_sam:
-            # When use_mask_input_as_output_without_sam=True, we directly output the mask input
-            # (see it as a GT mask) without using a SAM prompt encoder + mask decoder.
+        # When a mask prompt is provided, SAM2 can optionally bypass the SAM head
+        # and treat the mask as the output directly. This is useful for speed but
+        # breaks gradient flow if there is only a single frame (loss depends only
+        # on GT mask). To preserve gradients during training on single-frame clips,
+        # disable the bypass in that case.
+        if (
+            mask_inputs is not None
+            and self.use_mask_input_as_output_without_sam
+            and not (self.training and (num_frames is None or int(num_frames) <= 1))
+        ):
+            # Directly use the input mask as output (no SAM prompt/decoder path)
             pix_feat = current_vision_feats[-1].permute(1, 2, 0)
             pix_feat = pix_feat.view(-1, self.hidden_dim, *feat_sizes[-1])
             sam_outputs = self._use_mask_as_output(
