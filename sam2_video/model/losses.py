@@ -107,6 +107,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
+        logger.warning(f"targets_batch.shape: {targets_batch.shape}")
         num_objects = float(targets_batch.shape[1])
 
         losses = defaultdict(int)

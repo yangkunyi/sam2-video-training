@@ -167,7 +167,7 @@ class SAM2Model(SAM2Base):
             backbone_out["obj_to_cat"],
             backbone_out["num_categories"],
         )
-
+        # print(len(backbone_out["obj_to_cat"]))
         return out, backbone_out["obj_to_cat"]
 
     @logger.catch(onerror=lambda _: sys.exit(1))
@@ -199,7 +199,7 @@ class SAM2Model(SAM2Base):
         first_frame_mask, obj_to_cat, num_categories = utils.cat_to_obj_mask(
             first_frame_cat_mask
         )
-        first_frame_mask = first_frame_mask.detach().requires_grad_(True)
+        first_frame_mask = first_frame_mask.requires_grad_(True)
         backbone_out["obj_to_cat"] = obj_to_cat
         backbone_out["num_categories"] = num_categories
 
