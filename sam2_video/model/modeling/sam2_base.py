@@ -19,6 +19,8 @@ from sam2.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_fr
 NO_OBJ_SCORE = -1024.0
 
 
+from torch.utils.checkpoint import checkpoint as ckpt
+
 class SAM2Base(torch.nn.Module):
     def __init__(
         self,
@@ -93,6 +95,8 @@ class SAM2Base(torch.nn.Module):
         # extra arguments used to construct the SAM mask decoder; if not None, it should be a dict of kwargs to be passed into `MaskDecoder` class.
         sam_mask_decoder_extra_args=None,
         compile_image_encoder: bool = False,
+        # activation checkpointing control
+        use_activation_checkpoint: bool = False,
     ):
         super().__init__()
 
@@ -103,6 +107,7 @@ class SAM2Base(torch.nn.Module):
         self.num_feature_levels = 3 if use_high_res_features_in_sam else 1
         self.use_obj_ptrs_in_encoder = use_obj_ptrs_in_encoder
         self.max_obj_ptrs_in_encoder = max_obj_ptrs_in_encoder
+        self.use_activation_checkpoint = bool(use_activation_checkpoint)
         if use_obj_ptrs_in_encoder:
             # A conv layer to downsample the mask prompt to stride 4 (the same stride as
             # low-res SAM mask logits) and to change its scales from 0~1 to SAM logit scale,
@@ -342,20 +347,36 @@ class SAM2Base(torch.nn.Module):
             boxes=None,
             masks=sam_mask_prompt,
         )
-        (
-            low_res_multimasks,
-            ious,
-            sam_output_tokens,
-            object_score_logits,
-        ) = self.sam_mask_decoder(
-            image_embeddings=backbone_features,
-            image_pe=self.sam_prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings,
-            multimask_output=multimask_output,
-            repeat_image=False,  # the image is already batched
-            high_res_features=high_res_features,
-        )
+
+        def _sam_decode_wrapped(image_embeddings, sparse_embeds, dense_embeds):
+            return self.sam_mask_decoder(
+                image_embeddings=image_embeddings,
+                image_pe=self.sam_prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeds,
+                dense_prompt_embeddings=dense_embeds,
+                multimask_output=multimask_output,
+                repeat_image=False,  # the image is already batched
+                high_res_features=high_res_features,
+            )
+
+        if self.use_activation_checkpoint and (
+            self.training and (
+                backbone_features.requires_grad
+                or sparse_embeddings.requires_grad
+                or dense_embeddings.requires_grad
+            )
+        ):  
+            low_res_multimasks, ious, sam_output_tokens, object_score_logits = ckpt(
+                _sam_decode_wrapped, backbone_features, sparse_embeddings, dense_embeddings
+            )
+        else:
+            (
+                low_res_multimasks,
+                ious,
+                sam_output_tokens,
+                object_score_logits,
+            ) = _sam_decode_wrapped(backbone_features, sparse_embeddings, dense_embeddings)
+
         if self.pred_obj_scores:
             is_obj_appearing = object_score_logits > 0
 
@@ -466,7 +487,13 @@ class SAM2Base(torch.nn.Module):
 
     def forward_image(self, img_batch: torch.Tensor):
         """Get the image feature on the input batch."""
-        backbone_out = self.image_encoder(img_batch)
+        # Avoid retaining activations when the image encoder is frozen
+        enc_requires_grad = any(p.requires_grad for p in self.image_encoder.parameters())
+        if enc_requires_grad:
+            backbone_out = self.image_encoder(img_batch)
+        else:
+            with torch.no_grad():
+                backbone_out = self.image_encoder(img_batch)
         if self.use_high_res_features_in_sam:
             # precompute projected level 0 and level 1 features in SAM decoder
             # to avoid running it again on every SAM click
@@ -664,13 +691,23 @@ class SAM2Base(torch.nn.Module):
         memory = torch.cat(to_cat_memory, dim=0)
         memory_pos_embed = torch.cat(to_cat_memory_pos_embed, dim=0)
 
-        pix_feat_with_mem = self.memory_attention(
-            curr=current_vision_feats,
-            curr_pos=current_vision_pos_embeds,
-            memory=memory,
-            memory_pos=memory_pos_embed,
-            num_obj_ptr_tokens=num_obj_ptr_tokens,
-        )
+        # Use checkpointing to reduce activation memory during training
+        def _mem_attn_wrapped(curr_tensor, curr_pos_tensor, mem, mem_pos):
+            return self.memory_attention(
+                curr=[curr_tensor],
+                curr_pos=[curr_pos_tensor],
+                memory=mem,
+                memory_pos=mem_pos,
+                num_obj_ptr_tokens=num_obj_ptr_tokens,
+            )
+
+        curr_tensor = current_vision_feats[-1]
+        curr_pos_tensor = current_vision_pos_embeds[-1]
+        if self.use_activation_checkpoint and self.training and (curr_tensor.requires_grad or memory.requires_grad):
+            pix_feat_with_mem = ckpt(_mem_attn_wrapped, curr_tensor, curr_pos_tensor, memory, memory_pos_embed)
+        else:
+            pix_feat_with_mem = _mem_attn_wrapped(curr_tensor, curr_pos_tensor, memory, memory_pos_embed)
+
         # reshape the output (HW)BC => BCHW
         pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, H, W)
         return pix_feat_with_mem
@@ -708,9 +745,15 @@ class SAM2Base(torch.nn.Module):
             mask_for_mem = mask_for_mem * self.sigmoid_scale_for_mem_enc
         if self.sigmoid_bias_for_mem_enc != 0.0:
             mask_for_mem = mask_for_mem + self.sigmoid_bias_for_mem_enc
-        maskmem_out = self.memory_encoder(
-            pix_feat, mask_for_mem, skip_mask_sigmoid=True  # sigmoid already applied
-        )
+
+        def _mem_enc_wrapped(pix, mask):
+            return self.memory_encoder(pix, mask, skip_mask_sigmoid=True)  # sigmoid already applied
+
+        if self.use_activation_checkpoint and self.training and (pix_feat.requires_grad or mask_for_mem.requires_grad):
+            maskmem_out = ckpt(_mem_enc_wrapped, pix_feat, mask_for_mem)
+        else:
+            maskmem_out = _mem_enc_wrapped(pix_feat, mask_for_mem)
+
         maskmem_features = maskmem_out["vision_features"]
         maskmem_pos_enc = maskmem_out["vision_pos_enc"]
         # add a no-object embedding to the spatial memory to indicate that the frame

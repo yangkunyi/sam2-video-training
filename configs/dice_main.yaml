@@ -58,9 +58,9 @@ loss:
   gt_stride: 1
   # Multi-step weights (used when type=multi_step)
   weight_dict:
-    loss_mask: 20
-    loss_dice: 1
-    loss_iou: 1
+    loss_mask: 1
+    loss_dice: 20
+    loss_iou: 5
     loss_class: 0
   supervise_all_iou: true
   iou_use_l1_loss: true

@@ -44,6 +44,7 @@ model:
   # Prompting behavior
   prompt_type: point  # {point, box, mask}
   forward_backbone_per_frame_for_eval: true
+  use_activation_checkpoint: false
 
   # Prompt generation parameters
   num_pos_points: 2

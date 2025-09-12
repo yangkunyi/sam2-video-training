@@ -52,6 +52,8 @@ class SAM2Model(SAM2Base):
         num_pos_points: int = 1,
         num_neg_points: int = 0,
         include_center: bool = True,
+        use_activation_checkpoint: bool = False,
+        random_init_memory_modules: bool = False,
     ):
         """
         Initialize unified SAM2 model with configuration management and training capabilities.
@@ -75,11 +77,14 @@ class SAM2Model(SAM2Base):
 
         # 3. 先构建一个完整的 SAM2 模型
         # Resolve config path relative to repository if needed
-        sam2_model = build_sam2(self.config_path, self.checkpoint_path, device=device)
+        sam2_model = build_sam2(
+            self.config_path, self.checkpoint_path, device=device, mode="train"
+        )
         super().__init__(
             image_encoder=sam2_model.image_encoder,
             memory_attention=sam2_model.memory_attention,
             memory_encoder=sam2_model.memory_encoder,
+            use_activation_checkpoint=use_activation_checkpoint,
         )
 
         for attr_name in dir(sam2_model):
@@ -119,6 +124,10 @@ class SAM2Model(SAM2Base):
                     self.sam_prompt_encoder.load_state_dict(
                         torch.load(pe_path), strict=True
                     )
+
+        # Optionally reinitialize memory modules to random weights
+        if random_init_memory_modules:
+            self._randomly_initialize_memory_modules()
 
         # 6. 按需冻结权重
         trainable_modules = trainable_modules or [
@@ -198,7 +207,8 @@ class SAM2Model(SAM2Base):
         first_frame_mask, obj_to_cat, num_categories = utils.cat_to_obj_mask(
             first_frame_cat_mask
         )
-        first_frame_mask = first_frame_mask.requires_grad_(True)
+        # GT masks should not track gradients
+        # first_frame_mask = first_frame_mask.requires_grad_(True)
         backbone_out["obj_to_cat"] = obj_to_cat
         backbone_out["num_categories"] = num_categories
 
@@ -282,8 +292,8 @@ class SAM2Model(SAM2Base):
         num_frames = backbone_out["num_frames"]
         all_frame_outputs = []
         output_dict = {
-            "cond_frame_outputs": {},  # dict containing {frame_idx: <out>}
-            "non_cond_frame_outputs": {},  # dict containing {frame_idx: <out>}
+            "cond_frame_outputs": {},  # dict containing {frame_idx: <lightweight_mem_entry>}
+            "non_cond_frame_outputs": {},  # dict containing {frame_idx: <lightweight_mem_entry>}
         }
 
         # Sequential processing: [0, 1, 2, ..., num_frames-1]
@@ -325,18 +335,67 @@ class SAM2Model(SAM2Base):
                 output_dict=output_dict,
             )
 
-            all_frame_outputs.append(current_out)
+            # Create a lightweight memory entry for the memory bank to avoid retaining
+            # unnecessary tensors and graphs across frames.
+            mem_entry = {
+                "maskmem_features": current_out.get("maskmem_features"),
+                "maskmem_pos_enc": current_out.get("maskmem_pos_enc"),
+                "obj_ptr": current_out.get("obj_ptr"),
+            }
+            # Detach tensors to prevent cross-frame graph accumulation
+            mmf = mem_entry.get("maskmem_features")
+            if isinstance(mmf, torch.Tensor):
+                mem_entry["maskmem_features"] = mmf.detach()
+            mmpe = mem_entry.get("maskmem_pos_enc")
+            if isinstance(mmpe, torch.Tensor):
+                mem_entry["maskmem_pos_enc"] = mmpe.detach()
+            elif isinstance(mmpe, (list, tuple)):
+                mem_entry["maskmem_pos_enc"] = [
+                    t.detach() if torch.is_tensor(t) else t for t in mmpe
+                ]
+            optr = mem_entry.get("obj_ptr")
+            if isinstance(optr, torch.Tensor):
+                mem_entry["obj_ptr"] = optr.detach()
+
+            # Save lightweight memory to the appropriate bank and prune non-cond window
             if is_init_cond_frame:
-                output_dict["cond_frame_outputs"][frame_idx] = current_out
+                output_dict["cond_frame_outputs"][frame_idx] = mem_entry
             else:
-                output_dict["non_cond_frame_outputs"][frame_idx] = current_out
+                output_dict["non_cond_frame_outputs"][frame_idx] = mem_entry
+                # Keep only the last (num_maskmem - 1) non-conditioning frames
+                max_noncond = (
+                    max(int(self.num_maskmem) - 1, 0)
+                    if hasattr(self, "num_maskmem")
+                    else 0
+                )
+                if max_noncond == 0:
+                    output_dict["non_cond_frame_outputs"].clear()
+                else:
+                    keys = sorted(output_dict["non_cond_frame_outputs"].keys())
+                    while len(keys) > max_noncond:
+                        old_k = keys.pop(0)
+                        del output_dict["non_cond_frame_outputs"][old_k]
+
+            # Do not keep mask memory tensors in the per-frame outputs returned for loss
+            if "maskmem_features" in current_out:
+                current_out["maskmem_features"] = None
+            if "maskmem_pos_enc" in current_out:
+                current_out["maskmem_pos_enc"] = None
+
+            all_frame_outputs.append(current_out)
+
+            # Release references to per-frame feature holders early
+            del current_vision_feats
+            del current_vision_pos_embeds
 
         if return_dict:
             return output_dict
 
         # Make DDP happy with activation checkpointing by removing unused keys
+        keys_to_drop = {"obj_ptr", "maskmem_features", "maskmem_pos_enc"}
         all_frame_outputs = [
-            {k: v for k, v in d.items() if k != "obj_ptr"} for d in all_frame_outputs
+            {k: v for k, v in d.items() if k not in keys_to_drop}
+            for d in all_frame_outputs
         ]
 
         return all_frame_outputs
@@ -459,6 +518,34 @@ class SAM2Model(SAM2Base):
             self.config_path,
             self.device,
         )
+
+    @logger.catch(onerror=lambda _: sys.exit(1))
+    def _randomly_initialize_memory_modules(self) -> None:
+        """
+        Reinitialize the memory modules (memory_attention and memory_encoder)
+        with their default random initialization.
+
+        This intentionally limits scope to the two memory-related modules so that
+        the rest of the pretrained weights remain intact. It uses each submodule's
+        own `reset_parameters` when available.
+        """
+        modules_to_reset = []
+        for name in ["memory_attention", "memory_encoder"]:
+            mod = getattr(self, name, None)
+            if isinstance(mod, nn.Module):
+                modules_to_reset.append((name, mod))
+            else:
+                logger.warning(f"Memory module '{name}' not found; skipping reinit")
+
+        for name, module in modules_to_reset:
+            reset_count = 0
+            for m in module.modules():  # includes the module itself
+                if hasattr(m, "reset_parameters") and callable(getattr(m, "reset_parameters")):
+                    m.reset_parameters()
+                    reset_count += 1
+            logger.info(
+                f"Random-initialized memory module '{name}' via reset_parameters() on {reset_count} submodules"
+            )
 
     def _get_module_mapping(self) -> Dict[str, nn.Module]:
         """
