@@ -45,6 +45,8 @@ model:
   prompt_type: point  # {point, box, mask}
   forward_backbone_per_frame_for_eval: true
   use_activation_checkpoint: false
+  # Reinitialize memory modules (memory_attention, memory_encoder) with PyTorch random weights
+  random_init_memory_modules: false
 
   # Prompt generation parameters
   num_pos_points: 2
@@ -57,6 +59,10 @@ loss:
   type: multi_step
   # Subsample frames for loss (use frames 0, k, 2k, ...)
   gt_stride: 1
+  # BCE-specific: temperature to scale logits before BCE (T>0)
+  bce_logit_temperature: 1.0
+  # Multi-step-specific: temperature to scale mask logits before focal/dice (T>0)
+  multistep_logit_temperature: 1.0
   # Multi-step weights (used when type=multi_step)
   weight_dict:
     loss_mask: 20

@@ -87,6 +87,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         pred_obj_scores=False,
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
+        logit_temperature: float = 1.0,
     ):
         super().__init__()
         self.weight_dict = weight_dict
@@ -103,12 +104,14 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.supervise_all_iou = supervise_all_iou
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
+        if not (isinstance(logit_temperature, (int, float)) and logit_temperature > 0):
+            raise ValueError("logit_temperature must be a positive float")
+        self.logit_temperature = float(logit_temperature)
 
     @logger.catch(onerror=lambda _: sys.exit(1))
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
         num_objects = float(targets_batch.shape[1])
-
         losses = defaultdict(int)
         for outs, targets in zip(outs_batch, targets_batch):
             cur_losses = self._forward(outs, targets, num_objects)
@@ -149,6 +152,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
         if not valid.any():
             logger.warning("DEBUG: no valid masks")
+            logger.warning(f"DEBUG: src_masks.shape = {src_masks.shape}")
             zero_loss = src_masks.sum() * 0.0
             losses["loss_mask"] += zero_loss
             losses["loss_dice"] += zero_loss
@@ -158,6 +162,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
         # Filter tensors to only include valid masks
         src_masks = src_masks[valid].unsqueeze(1)
+        # Temperature scale mask logits before losses
+        src_masks = src_masks / self.logit_temperature
         target_masks = target_masks[valid].unsqueeze(1)
         ious = ious[valid].unsqueeze(1)
 
@@ -262,6 +268,7 @@ class BCECategoryLoss(nn.Module):
         self,
         pos_weight: Optional[Union[List[float], torch.Tensor]] = None,
         reduction: str = "mean",
+        logit_temperature: float = 1.0,
     ) -> None:
         super().__init__()
         # Store as tensor if provided; device/dtype adjusted in forward
@@ -278,6 +285,9 @@ class BCECategoryLoss(nn.Module):
         else:
             self._pos_weight = None  # type: ignore
         self.reduction = reduction
+        if not (isinstance(logit_temperature, (int, float)) and logit_temperature > 0):
+            raise ValueError("logit_temperature must be a positive float")
+        self.logit_temperature = float(logit_temperature)
 
     @staticmethod
     def _bce_loss(
@@ -332,6 +342,8 @@ class BCECategoryLoss(nn.Module):
             valid = targets.sum(dim=(1, 2)).bool()  # [C] 哪些通道有前景
             logits = logits[valid]
             soft_mask = soft_mask[valid]
+            # Temperature scale logits before BCE
+            logits = logits / self.logit_temperature
             pos_w = None
             # Prepare optional pos_weight
             if self._pos_weight is not None:

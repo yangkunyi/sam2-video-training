@@ -414,7 +414,13 @@ def add_prompt(
 
 
 @logger.catch(onerror=lambda _: sys.exit(1))
-def predict_on_video(predictor, inference_state, start_idx):
+def predict_on_video(
+    predictor,
+    inference_state,
+    start_idx,
+    frames=None,
+    probs_out_dir: str | None = None,
+):
     """
     Predict segmentation masks for the video.
 
@@ -428,10 +434,62 @@ def predict_on_video(predictor, inference_state, start_idx):
     """
     video_segments = {}
     # video_segments contains the per-frame segmentation results
+    # Precompute an index from order_in_video -> (image_id, video_id, H, W)
+    frame_meta = None
+    if frames is not None:
+        frame_meta = {
+            f["order_in_video"]: (
+                f["id"],
+                f["video_id"],
+                int(f["height"]),
+                int(f["width"]),
+            )
+            for f in frames
+        }
+
+    def _maybe_write_probs(order_in_video_key, out_obj_ids, out_mask_logits):
+        if probs_out_dir is None or frame_meta is None:
+            return
+        image_id, video_id, H, W = frame_meta[order_in_video_key]
+        os.makedirs(probs_out_dir, exist_ok=True)
+        npz_path = os.path.join(probs_out_dir, f"{image_id}.npz")
+        if os.path.exists(npz_path):
+            return
+        # Convert logits to float16 probabilities per object
+        probs = []
+        for i, _ in enumerate(out_obj_ids):
+            p = (
+                torch.sigmoid(out_mask_logits[i])
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float16)
+            )
+            # standardize shape to [H,W]
+            if p.ndim > 2:
+                p = np.squeeze(p)
+            probs.append(p)
+        if len(probs) == 0:
+            return
+        probs = np.stack(probs, axis=0)
+        obj_ids = np.asarray(out_obj_ids, dtype=np.int64)
+        np.savez_compressed(
+            npz_path,
+            probs=probs,
+            obj_ids=obj_ids,
+            image_id=np.int64(image_id),
+            video_id=str(video_id),
+            order_in_video=np.int64(order_in_video_key),
+            height=np.int32(H),
+            width=np.int32(W),
+        )
+
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         inference_state, reverse=True
     ):
-        video_segments[out_frame_idx + start_idx] = {
+        order_key = out_frame_idx + start_idx
+        _maybe_write_probs(order_key, out_obj_ids, out_mask_logits)
+        video_segments[order_key] = {
             out_obj_id: {
                 "mask": (out_mask_logits[i] > 0.0).cpu().numpy(),
                 "score": torch.sigmoid(out_mask_logits[i])
@@ -443,7 +501,9 @@ def predict_on_video(predictor, inference_state, start_idx):
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         inference_state
     ):
-        video_segments[out_frame_idx + start_idx] = {
+        order_key = out_frame_idx + start_idx
+        _maybe_write_probs(order_key, out_obj_ids, out_mask_logits)
+        video_segments[order_key] = {
             out_obj_id: {
                 "mask": (out_mask_logits[i] > 0.0).cpu().numpy(),
                 "score": torch.sigmoid(out_mask_logits[i])
@@ -469,7 +529,9 @@ def save_prompt_frame(
 
 
 @logger.catch(onerror=lambda _: sys.exit(1))
-def process_video_clip(frames, clip_prompts: List[PromptInfo], clip_range: ClipRange):
+def process_video_clip(
+    frames, clip_prompts: List[PromptInfo], clip_range: ClipRange, probs_out_dir=None
+):
     """
     Process a video clip.
 
@@ -503,7 +565,13 @@ def process_video_clip(frames, clip_prompts: List[PromptInfo], clip_range: ClipR
             prompt_type,
         )
 
-    video_segments = predict_on_video(predictor, inference_state, start_idx)
+    video_segments = predict_on_video(
+        predictor,
+        inference_state,
+        start_idx,
+        frames=frames,
+        probs_out_dir=probs_out_dir,
+    )
 
     del predictor
     return video_segments
@@ -701,7 +769,11 @@ def merge_prompts(prompts_by_categories, prompts_by_clip_length):
 
 @logger.catch(onerror=lambda _: sys.exit(1))
 def process_singel_video(
-    frames, prompt_type, clip_length: int = None, variable_cats: bool = False
+    frames,
+    prompt_type,
+    clip_length: int = None,
+    variable_cats: bool = False,
+    probs_out_dir=None,
 ):
     """
     Process a single video.
@@ -734,12 +806,16 @@ def process_singel_video(
     for clip_prompts, clip_range in gen_clip_prompts:
         save_prompt_frame(clip_prompts)
         logger.info(clip_range)
-        video_segments.update(process_video_clip(frames, clip_prompts, clip_range))
+        video_segments.update(
+            process_video_clip(
+                frames, clip_prompts, clip_range, probs_out_dir=probs_out_dir
+            )
+        )
     return video_segments
 
 
 @logger.catch(onerror=lambda _: sys.exit(1))
-def process_all_videos(prompt_type, clip_length, variable_cats):
+def process_all_videos(prompt_type, clip_length, variable_cats, probs_out_dir=None):
     """
     Process all videos.
 
@@ -755,7 +831,7 @@ def process_all_videos(prompt_type, clip_length, variable_cats):
         logger.info(f"video_id: {video_id}")
         frames = get_dicts_by_field_value(get_imgs(COCO_INFO), "video_id", video_id)
         video_segments = process_singel_video(
-            frames, prompt_type, clip_length, variable_cats
+            frames, prompt_type, clip_length, variable_cats, probs_out_dir=probs_out_dir
         )
         # print(video_segments)
         all_video_segments[video_id] = video_segments
@@ -854,6 +930,7 @@ def inference(
     bbox_noise_type="shift_scale",
     num_neg_points=0,
     grid_spaceing=None,
+    probs_out_dir: str | None = None,
     *,
     run_dir: str,
     model_cfg_override: str | None = None,
@@ -963,12 +1040,40 @@ def inference(
     for img in imgs:
         VIDEO_ID_SET.add(img["video_id"])
 
+    # If requested, prepare directory to dump float16 probability maps
+    if probs_out_dir is not None:
+        # Persist under EVAL_DIR if a relative path is provided
+        probs_out_dir = (
+            os.path.join(EVAL_DIR, probs_out_dir)
+            if not os.path.isabs(probs_out_dir)
+            else probs_out_dir
+        )
+        os.makedirs(probs_out_dir, exist_ok=True)
+
     all_videos_segments = process_all_videos(
-        normalized_prompt, clip_length, variable_cats
+        normalized_prompt, clip_length, variable_cats, probs_out_dir=probs_out_dir
     )
     predict_path, prompt_path = save_as_coco_format(
         all_videos_segments, save_video_list
     )
+
+    # Write meta for saved probabilities, if any
+    if probs_out_dir is not None:
+        try:
+            image_ids = []
+            for fn in os.listdir(probs_out_dir):
+                if fn.endswith(".npz"):
+                    stem = os.path.splitext(fn)[0]
+                    try:
+                        image_ids.append(int(stem))
+                    except ValueError:
+                        # keep non-int names too
+                        image_ids.append(stem)
+            meta = {"mod": int(MOD), "image_ids": image_ids, "dtype": "float16"}
+            with open(os.path.join(probs_out_dir, "meta.json"), "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write probs meta.json: {e}")
 
     # Restore previous global config paths to avoid leaking overrides
     if prev_model_cfg is not None:

@@ -44,6 +44,8 @@ model:
   prompt_type: point  # {point, box, mask}
   forward_backbone_per_frame_for_eval: false
   use_activation_checkpoint: false
+  # Reinitialize memory modules (memory_attention, memory_encoder) with PyTorch random weights
+  random_init_memory_modules: false
 
   # Prompt generation parameters
   num_pos_points: 1
@@ -56,11 +58,13 @@ loss:
   type: multi_step
   # Subsample frames for loss (use frames 0, k, 2k, ...)
   gt_stride: 1
+  # Multi-step-specific: temperature to scale mask logits before focal/dice (T>0)
+  multistep_logit_temperature: 1.0
   # Multi-step weights (used when type=multi_step)
   weight_dict:
     loss_mask: 1
-    loss_dice: 20
-    loss_iou: 5
+    loss_dice: 10
+    loss_iou: 10
     loss_class: 0
   supervise_all_iou: true
   iou_use_l1_loss: true
@@ -97,7 +101,7 @@ trainer:
   accelerator: auto
   devices: 1
   precision: 16
-  max_epochs: 3
+  max_epochs:  
   gradient_clip_val: 1.0
   accumulate_grad_batches: 16
   val_check_interval: 0.2
@@ -132,6 +136,10 @@ callbacks:
   - _target_: lightning.pytorch.callbacks.ModelSummary  
     max_depth: 2
 
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: "val/total_loss"
+    patience: 5
+    mode: min
   # - _target_: lightning.pytorch.callbacks.StochasticWeightAveraging
   #   swa_lrs: 0.005
 

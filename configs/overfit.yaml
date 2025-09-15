@@ -36,8 +36,6 @@ model:
   # Trainable modules
   trainable_modules:
     - memory_attention
-    - mask_decoder
-    - prompt_encoder
     - memory_encoder
 
   # Device and image
@@ -46,6 +44,8 @@ model:
   prompt_type: point  # {point, box, mask}
   forward_backbone_per_frame_for_eval: false
   use_activation_checkpoint: true
+  # Reinitialize memory modules (memory_attention, memory_encoder) with PyTorch random weights
+  random_init_memory_modules: false
 
   # Prompt generation parameters
   num_pos_points: 1
@@ -58,6 +58,8 @@ loss:
   type: raw
   # Subsample frames for loss (use frames 0, k, 2k, ...)
   gt_stride: 1
+  # Multi-step-specific: temperature to scale mask logits before focal/dice (T>0)
+  multistep_logit_temperature: 1.0
   # Multi-step weights (used when type=multi_step)
   weight_dict:
     loss_mask: 20
@@ -104,7 +106,7 @@ trainer:
   accumulate_grad_batches: 1
   val_check_interval: 0.2
   num_sanity_val_steps: 2
-  enable_checkpointing: true
+  enable_checkpointing: false
   enable_progress_bar: true
   log_every_n_steps: 2
   limit_train_batches: 1
@@ -153,7 +155,7 @@ visualization:
 
 # Evaluation configuration (post-training inference + eval)
 eval:
-  enabled: true
+  enabled: false
   coco_path: ${data.val_path}
   output_subdir: "eval"
   prompt_type: ${model.prompt_type}     # reuse training prompt (point|box|mask)

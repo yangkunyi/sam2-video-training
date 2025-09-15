@@ -152,6 +152,7 @@ class COCOImageDataset(Dataset):
             (self.num_categories, self.image_size, self.image_size), dtype=torch.bool
         )
 
+        raw_sum = 0
         for ann in annotations:
             segmentation = ann.get("segmentation")
             cat_id = ann.get("category_id")
@@ -173,7 +174,7 @@ class COCOImageDataset(Dataset):
 
             # Merge multiple instances of same category with OR
             masks[cat_idx] |= m
-
+            raw_sum += m_np.sum()
         # Cache the result and return
         self.mask_cache[cache_key] = masks
         return masks
@@ -202,6 +203,12 @@ class COCOImageDataset(Dataset):
         # Load ground truth masks
         image_id = img_info["id"]
         mask_tensor = self._load_gt_masks_for_image(image_id)
+
+        if mask_tensor.sum() == 0:
+            logger.warning(f"Skipping image {image_id} due to empty masks.")
+            # Randomly pick another index
+            new_idx = (idx + 1) % len(self.images)
+            return self[new_idx]
 
         return {
             "image": image_tensor,  # [C, H, W]
@@ -343,7 +350,7 @@ def sam2_collate_fn(batch_list: List[Dict[str, torch.Tensor]]) -> BatchedVideoDa
     """
     # Since batch_size=1 is enforced, we can optimize memory usage
     # by avoiding unnecessary tensor operations and simplifying indexing
-    
+
     # 1. Stack images [T, B, C, H, W] - optimized for batch_size=1
     images = torch.stack([s["images"] for s in batch_list]).permute(1, 0, 2, 3, 4)
     T, B, C, H, W = images.shape

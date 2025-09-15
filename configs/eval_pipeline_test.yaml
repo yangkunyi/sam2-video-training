@@ -36,3 +36,4 @@ data:
 
 loss:
   type: bce
+  bce_logit_temperature: 1.0

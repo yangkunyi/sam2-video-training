@@ -39,6 +39,7 @@ data:
 
 loss:
   type: raw
+  multistep_logit_temperature: 1.0
 
 
 +callbacks:

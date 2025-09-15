@@ -23,10 +23,6 @@ from baseline_utils import extract_baseline_metrics, calculate_metrics_delta
 
 from hydra.core.global_hydra import GlobalHydra
 
-torch.cuda.memory._record_memory_history(
-    True, trace_alloc_max_entries=100000, trace_alloc_record_context=True
-)  # 关键：把 Python 栈也记下来
-
 GlobalHydra.instance().clear()
 
 
@@ -143,6 +139,7 @@ def main(cfg: DictConfig) -> None:
 
     # Resolve best checkpoint and export state_dict
     ckpt_path = trainer.checkpoint_callback.best_model_path
+    print(ckpt_path)
     if not ckpt_path:
         raise FileNotFoundError(
             "No best checkpoint found; ensure ModelCheckpoint is enabled and monitoring a metric"

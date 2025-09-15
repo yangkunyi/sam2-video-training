@@ -70,7 +70,14 @@ class SAM2LightningModule(L.LightningModule):
         }:
             pos_weight = getattr(self.hparams.loss, "bce_pos_weight", None)
             reduction = getattr(self.hparams.loss, "bce_reduction", "mean")
-            self.criterion = BCECategoryLoss(pos_weight=pos_weight, reduction=reduction)
+            logit_temperature = getattr(
+                self.hparams.loss, "bce_logit_temperature", 1.0
+            )
+            self.criterion = BCECategoryLoss(
+                pos_weight=pos_weight,
+                reduction=reduction,
+                logit_temperature=logit_temperature,
+            )
             logger.info("Using BCECategoryLoss (BCEWithLogits over [C,H,W])")
         else:
             self.criterion = MultiStepMultiMasksAndIous(
@@ -80,6 +87,7 @@ class SAM2LightningModule(L.LightningModule):
                 pred_obj_scores=self.hparams.loss.pred_obj_scores,
                 focal_gamma_obj_score=self.hparams.loss.focal_gamma_obj_score,
                 focal_alpha_obj_score=self.hparams.loss.focal_alpha_obj_score,
+                logit_temperature=getattr(self.hparams.loss, "multistep_logit_temperature", 1.0),
             )
             logger.info("Using MultiStepMultiMasksAndIous loss")
 
@@ -276,7 +284,6 @@ class SAM2LightningModule(L.LightningModule):
             self._log_gif(
                 "train", frames, batch.masks, outs_per_frame, obj_to_cat, "train"
             )
-
         return total_loss
 
     def validation_step(
