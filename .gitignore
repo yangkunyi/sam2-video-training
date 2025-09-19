@@ -33,6 +33,7 @@ demo/backend/checkpoints/*.pt
 *.png
 *.gif
 *.pt
+*.pth
 *.pkl
 predict.json
 
@@ -40,6 +41,7 @@ predict.json
 *.log
 *std*
 events*
+logs/
 sam2_logs/
 
 # Test coverage and cache

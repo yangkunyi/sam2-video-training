@@ -1,141 +1,110 @@
 # SAM2 Video Training
 
-A simplified, clean implementation for training SAM2 memory modules on video data.
+This repository provides the reference training code used in our SAM2 memory module study on video instance segmentation. The focus is on a transparent, reproducible pipeline that researchers can easily adapt for their own datasets.
 
-## Features
+## Key Features
 
-- Unified training via PyTorch Lightning
-- Clean Hydra with `_target_` instantiation
-- Multi-object, per-category masks from COCO
-- Mixed precision, checkpoints, LR monitor
-- Weights & Biases logging (videos, metrics)
+- Minimal PyTorch Lightning training loop with fail-fast logging via Loguru.
+- Single Hydra configuration (`configs/config.yaml`) controlling data, model, trainer, callbacks, and evaluation.
+- Dataset helpers for converting COCO-style annotations into fixed-length video clips with multi-object masks.
+- Evaluation scripts for reporting instance-level metrics on validation or hold-out sets.
 
-## Quick Start
+## Repository Layout
 
-### 1. Install dependencies
+- `train.py`: Hydra-powered entry point wrapping the Lightning module and data module.
+- `configs/`: Default experiment configuration plus model variants under `configs/sam2/`.
+- `sam2_video/`: Package containing data loaders, model wrapper, training module, and utilities.
+- `baseline_utils.py`, `baseline_eval.py`: Utilities for reproducing baseline comparisons reported in the paper.
+- `examples/`, `scripts/`, `notebooks/`: Supplementary material used during experimentation.
 
-python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+## Getting Started
 
+### 1. Environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 pip install git+https://github.com/facebookresearch/segment-anything-2.git
+```
 
-### 2. Train
+Make sure the `sam2` checkpoint (`.pt` / `.pth`) referenced in your config is accessible locally.
 
+### 2. Prepare Data
+
+The dataloader expects COCO-style JSON with the following required fields:
+
+- `images[*].video_id`: groups frames by video
+- `images[*].order_in_video`: frame index within each video
+- `annotations[*].segmentation`: RLE mask (per-object)
+
+Frame ordering and category IDs must be consistent; empty categories are rejected to enforce fail-fast behaviour. See `sam2_video/data/dataset.py` for additional details.
+
+### 3. Configure an Experiment
+
+All knobs live in `configs/config.yaml`. Common overrides:
+
+```bash
+python train.py \
+  model.checkpoint_path=/path/to/sam2.pt \
+  model.config_path=/path/to/sam2.yaml \
+  data.train_path=/data/train.json \
+  data.val_path=/data/val.json \
+  trainer.accelerator=gpu trainer.devices=1 trainer.precision=16-mixed
+```
+
+Logging defaults to the standard console output. Remote loggers (e.g., Weights & Biases) can be disabled by removing or overriding the `wandb` node in the config:
+
+```bash
+python train.py +wandb=null
+```
+
+### 4. Train
+
+```bash
 python train.py
-
-Common overrides:
-
-- Paths: `python train.py model.checkpoint_path=/path/sam2.pt model.config_path=/path/sam2.yaml`
-- Data: `python train.py data.train_path=/data/train.json data.val_path=/data/val.json`
-- Hardware: `python train.py trainer.accelerator=gpu trainer.devices=1 trainer.precision=16-mixed`
-
-## Project Structure
-
-- `train.py`: Single entry (Hydra + Lightning)
-- `configs/`: Single flat config (`config.yaml`) plus SAM2 arch YAMLs under `configs/sam2/`
-- `sam2_video/`: Library package
-  - `config.py`: Types only (no ConfigStore)
-  - `model/sam2model.py`: SAM2 wrapper and forward
-  - `model/losses.py`: Losses
-  - `training/trainer.py`: Lightning modules
-  - `data/dataset.py`: COCO→video clips + collate
-  - `data/data_utils.py`: BatchedVideoDatapoint structures
-  - `utils/`: prompts.py, masks.py, viz.py, model_utils.py, `__init__.py` aggregator
-
-## Configuration Notes
-
-- All configuration now lives in `configs/config.yaml` for simplicity.
-- `data.*`: set `train_path`, `val_path`, `image_size`, `video_clip_length`, `stride`, `batch_size`
-- `model.*`: Hydra target for `sam2_video.model.sam2model.SAM2Model`; provide `checkpoint_path`, `config_path`; set prompt via `model.prompt_type` in {point, box, mask}
-- `module`: Hydra target for LightningModule (`sam2_video.training.trainer.SAM2LightningModule`)
-- `data_module`: Hydra target for LightningDataModule (`sam2_video.training.trainer.SAM2LightningDataModule`)
-- `trainer`: Hydra target for `lightning.pytorch.trainer.trainer.Trainer`
-- `callbacks`: list of Hydra targets (ModelCheckpoint, LearningRateMonitor)
-- `visualization.*`: enable/disable GIF logging; defaults are conservative
-
-### Learning Rate Schedule
-
-- Scheduler is fixed to cosine decay with linear warmup using `transformers.get_cosine_schedule_with_warmup`.
-- Step-based only; `num_training_steps` is derived from Lightning's `trainer.estimated_stepping_batches`.
-- Config keys under `scheduler`:
-  - `enabled`: turn scheduling on/off (default: true)
-  - `warmup_steps`: linear warmup steps before cosine decay (default: 500)
-  - `num_cycles`: cosine cycles over training (default: 0.5)
-
-Examples:
-
-```
-python train.py scheduler.warmup_steps=1000
-python train.py trainer.max_epochs=20 data.batch_size=2
 ```
 
-## Data Format
+Resolved configs and checkpoints are stored under `outputs/<date>/<time>/`.
 
-COCO-style JSON with `images`, `annotations`, `categories` and additional fields:
+### 5. Evaluate
 
-- `images[*].video_id`: integer grouping frames
-- `images[*].order_in_video`: sorting within a video
- - Fail-fast required keys per image: `id`, `file_name`, `video_id`, `order_in_video`
+To run evaluation on a trained checkpoint:
 
-`annotations[*].segmentation` must be RLE for efficiency. Category ids are remapped to contiguous indices.
-
-## Training Features
-
-- Lightning with mixed precision
-- Checkpointing and LR monitor
-- Optional early stopping
-
-## Loss Functions
-
-The training uses a combined loss with configurable weights:
-- BCE Loss: Binary cross-entropy for mask prediction
-- Dice Loss: Spatial overlap for segmentation
-- IoU Loss: Intersection over Union loss
-
-Temporal subsampling for supervision is supported via `loss.gt_stride`.
-
-- Set `loss.gt_stride=k` to compute the loss only on frames `[0, k, 2k, ...]` within each clip.
-- Predictions and ground-truth are aligned on those frames only; forward still runs on all frames.
-- Example: `loss.gt_stride=4` uses the 1st, 5th, 9th frames for loss if present.
-
-## Examples
-
-python train.py data.train_path=/data/train.json data.val_path=/data/val.json \
-  model.checkpoint_path=/models/sam2.pt model.config_path=/models/sam2.yaml \
-  trainer.accelerator=gpu trainer.devices=1
-
-## Output
-
-- `outputs/<date>/<time>/checkpoints`: checkpoint files
-- `outputs/<date>/<time>/config.yaml`: resolved run config
-- `outputs/<date>/<time>/training.log`: run logs
-
-## Requirements
-
-See `requirements.txt` for full dependencies. Key packages:
-- PyTorch Lightning, torch, torchvision, torchmetrics
-- hydra-core, omegaconf
-- numpy, Pillow, pycocotools, imageio
-- loguru, wandb
-
-## Migration Notes
-
-The configs folder was simplified to reduce subdirectories:
-
-- **Before**: Many Hydra groups under `configs/{model,data,trainer,optimizer,scheduler,module,data_module,callbacks,loss,visualization}`
-- **After**: Single `configs/config.yaml` containing all sections. SAM2 arch YAML remains at `configs/sam2/sam2.1_hiera_t.yaml`.
-
-Common overrides remain the same; you can now switch prompts via:
-
-```
-python train.py model.prompt_type=mask
-python train.py model.prompt_type=box
+```bash
+python baseline_eval.py \
+  data.val_path=/data/val.json \
+  model.checkpoint_path=/path/to/sam2.ckpt \
+  output_dir=outputs/eval_run
 ```
 
-## Fail-Fast Behavior
+Pass `--help` to `train.py` or `baseline_eval.py` for the full list of Hydra arguments.
 
-- Errors in core methods are decorated with `@logger.catch(onerror=lambda _: sys.exit(1))` and will stop the run with a clear message.
-- Dataset must include non-empty `categories` and valid `file_name` for each image.
-- Prompt generation requires non-empty masks; otherwise it raises.
-- Batch size is enforced to 1 in the collate for simpler tracking assumptions.
+## Reproducing Paper Results
 
-The refactored code is approximately **70% smaller** and significantly easier to maintain and extend.
+Each experiment sweep is defined by a YAML file in `configs/`. The main paper setting corresponds to `configs/config.yaml` with prompt type `mask`. For ablations, we provide additional configs (e.g., `configs/dice_loss_only.yaml`).
+
+To restore an experiment precisely:
+
+```bash
+python train.py --config-name=dice_loss_only
+```
+
+## Citation
+
+If you use this codebase in your research, please cite our paper:
+
+```
+@inproceedings{<lead_author>2025sam2video,
+  title     = {SAM2 Video Training for Memory-Augmented Video Segmentation},
+  author    = {<Author List>},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  year      = {2025}
+}
+```
+
+Replace the placeholder fields with the final publication details once available.
+
+## License
+
+The license will be added upon camera-ready submission. Until then, all rights reserved.
