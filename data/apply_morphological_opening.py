@@ -122,12 +122,12 @@ def main():
     # File paths
     data_dir = "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data"
 
-    val_input = os.path.join(data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis17_coco_annotations_val_opened.json")
-    val_output = os.path.join(data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis17_coco_annotations_val_opened.json")
+    val_input = os.path.join(data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis18_coco_annotations_val.json")
+    val_output = os.path.join(data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis18_coco_annotations_val_opened.json")
 
-    train_input = os.path.join(data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis17_coco_annotations_train_opened.json")
+    train_input = os.path.join(data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis18_coco_annotations_train.json")
     train_output = os.path.join(
-        data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis17_coco_annotations_train_opened.json"
+        data_dir, "/bd_byta6000i0/users/surgicaldinov2/kyyang/sam2-video-training/data/endovis18_coco_annotations_train_openend.json"
     )
 
     kernel_size = 10

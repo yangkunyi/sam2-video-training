@@ -493,7 +493,7 @@ def predict_on_video(
             out_obj_id: {
                 "mask": (out_mask_logits[i] > 0.0).cpu().numpy(),
                 "score": torch.sigmoid(out_mask_logits[i])
-                .max()
+                .mean()
                 .item(),  # 使用 sigmoid 转换为概率，取最大值作为 score
             }
             for i, out_obj_id in enumerate(out_obj_ids)
@@ -507,7 +507,7 @@ def predict_on_video(
             out_obj_id: {
                 "mask": (out_mask_logits[i] > 0.0).cpu().numpy(),
                 "score": torch.sigmoid(out_mask_logits[i])
-                .max()
+                .mean()
                 .item(),  # 使用 sigmoid 转换为概率，取最大值作为 score
             }
             for i, out_obj_id in enumerate(out_obj_ids)

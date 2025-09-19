@@ -12,6 +12,7 @@ def job(cfg_path, gpu):
 
 
 tasks = discover_combo_configs()
+tasks = [task for task in tasks if 'endovis18' in str(task)]
 with concurrent.futures.ThreadPoolExecutor(5) as pool:
     futures = [pool.submit(job, cfg, idx % 1) for idx, cfg in enumerate(tasks)]
     for f in concurrent.futures.as_completed(futures):

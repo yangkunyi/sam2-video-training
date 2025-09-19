@@ -16,6 +16,7 @@ from lightning.pytorch.callbacks import EarlyStopping
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 import torch
+import os
 
 from sam2_video.eval import inference as eval_infer
 from sam2_video.eval import eval as eval_eval
@@ -32,6 +33,7 @@ def main(cfg: DictConfig) -> None:
     """Main entry point with consolidated training logic and Hydra configuration management."""
 
     OUTPUT_DIR = Path(HydraConfig.get().run.dir)
+    OAR_JOB_ID = os.getenv("OAR_JOB_ID", "000000")  # collision insurance
     # =====================================
     # SECTION 1: LOGGING SETUP
     # =====================================
@@ -56,14 +58,16 @@ def main(cfg: DictConfig) -> None:
         f"stride{cfg.loss.gt_stride}",
     ].extend(cfg.model.trainable_modules)
 
-    exp_name = combo_name
+    exp_name = f"{combo_name}__{OAR_JOB_ID}"
 
     # Weights & Biases
     logger.info(f"Initializing W&B logger for project: {cfg.wandb.project}")
     wandb_logger = instantiate(
         cfg.wandb,
         name=exp_name,
+        id=exp_name,  # = W&B run id → immutable
         tags=tags,
+        save_dir=OUTPUT_DIR,
     )
 
     wandb_logger.experiment.config.update(
@@ -114,7 +118,8 @@ def main(cfg: DictConfig) -> None:
         cfg.trainer,
         logger=wandb_logger,
         callbacks=callbacks,
-        default_root_dir=OUTPUT_DIR,
+        default_root_dir=(OUTPUT_DIR / "lightning_logs"),
+        # default_root_dir="test",
     )
 
     # Start training
@@ -141,15 +146,15 @@ def main(cfg: DictConfig) -> None:
     ckpt_path = trainer.checkpoint_callback.best_model_path
     print(ckpt_path)
     if not ckpt_path:
-        raise FileNotFoundError(
-            "No best checkpoint found; ensure ModelCheckpoint is enabled and monitoring a metric"
-        )
-    state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    raw_state_dict = state["state_dict"]
-    if any(k.startswith("model.") for k in raw_state_dict.keys()):
-        best_state_dict = {k[len("model.") :]: v for k, v in raw_state_dict.items()}
+        best_state_dict = None
+        logger.info("No best checkpoint found, skipping loading state_dict")
     else:
-        best_state_dict = raw_state_dict
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        raw_state_dict = state["state_dict"]
+        if any(k.startswith("model.") for k in raw_state_dict.keys()):
+            best_state_dict = {k[len("model.") :]: v for k, v in raw_state_dict.items()}
+        else:
+            best_state_dict = raw_state_dict
 
     # Inference → predict.json (under ${hydra:run.dir}/eval)
     _, _ = eval_infer.inference(
@@ -188,7 +193,7 @@ def main(cfg: DictConfig) -> None:
         "eval/Dice": float(result["avg_scores"]["dice"]),
         "eval/MAE": float(result["avg_scores"]["mae"]),
     }
-
+    summary["best_checkpoint_path"] = ckpt_path
     # Calculate and add baseline deltas
     baseline_metrics = extract_baseline_metrics(combo_name)
     if baseline_metrics:

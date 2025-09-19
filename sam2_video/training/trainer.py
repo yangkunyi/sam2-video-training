@@ -57,6 +57,8 @@ class SAM2LightningModule(L.LightningModule):
         # MODIFIED: 直接调用 save_hyperparameters()，它会自动捕获所有 __init__ 的参数
         # 这会自动创建 self.hparams.model, self.hparams.loss, self.hparams.optimizer 等
         self.save_hyperparameters()
+        
+
 
         # Initialize model
         self.model = None

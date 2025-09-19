@@ -12,7 +12,7 @@ for ((i=0; i<GPU_COUNT; i++)); do
     /bd_byta6000i0/users/surgicaldinov2/miniforge3/condabin/conda run \
         --live-stream -n sam2 \
         env CUDA_VISIBLE_DEVICES=$i \
-        wandb agent sjtu-edu-cn/sam2-sweep/n400pala  &
+        wandb agent sjtu-edu-cn/sam2-sweep/izmhc4xv  &
 done
 
 # >>> 3. 关键：阻塞，直到所有后台子进程退出
